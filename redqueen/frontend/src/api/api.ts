@@ -10,8 +10,10 @@ const api = axios.create({
 });
 
 // 触发扫描
-export const triggerScan = async () => {
-  const response = await api.post('/scan/trigger');
+export const triggerScan = async (targetDate?: string) => {
+  const response = await api.post('/scan/trigger', {}, {
+    params: { target_date: targetDate }
+  });
   return response.data;
 };
 
@@ -22,25 +24,25 @@ export const getScanStatus = async (taskId: string) => {
 };
 
 // 获取异动个股列表
-export const getAnomalyStocks = async (scanDate: string) => {
+export const getAnomalyStocks = async (targetDate: string) => {
   const response = await api.get('/anomaly/stocks', {
-    params: { scan_date: scanDate }
+    params: { target_date: targetDate }
   });
   return response.data;
 };
 
 // 获取异动个股详情
-export const getAnomalyStock = async (stockCode: string, scanDate: string) => {
+export const getAnomalyStock = async (stockCode: string, targetDate: string) => {
   const response = await api.get(`/anomaly/stock/${stockCode}`, {
-    params: { scan_date: scanDate }
+    params: { target_date: targetDate }
   });
   return response.data;
 };
 
 // 导出异动个股清单
-export const exportAnomalyStocks = async (scanDate: string) => {
+export const exportAnomalyStocks = async (targetDate: string) => {
   const response = await api.get('/anomaly/export', {
-    params: { scan_date: scanDate },
+    params: { target_date: targetDate },
     responseType: 'blob'
   });
   return response.data;

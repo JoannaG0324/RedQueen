@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=redqueen123
+      - DB_NAME=stock_db
+      - DOUBAO_API_KEY=${DOUBAO_API_KEY}
+      - DOUBAO_API_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/responses
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=redqueen123
+      - MYSQL_DATABASE=stock_db
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/src/models/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+volumes:
+  mysql_data:

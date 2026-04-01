@@ -122,7 +122,8 @@ const StockDetail: React.FC = () => {
             <Descriptions column={1} size="small">
               {Object.entries(rule.details).map(([key, value]) => (
                 <Descriptions.Item key={key} label={key}>
-                  {typeof value === 'object' ? JSON.stringify(value) : value}
+                  {typeof value === 'object' ? JSON.stringify(value) : 
+                    typeof value === 'number' ? value.toFixed(4) : value}
                 </Descriptions.Item>
               ))}
             </Descriptions>

@@ -33,7 +33,7 @@ const AnomalyList: React.FC = () => {
   const handleTriggerScan = async () => {
     setScanLoading(true);
     try {
-      const result = await triggerScan();
+      const result = await triggerScan(selectedDate);
       setTaskId(result.task_id);
       setProgressModalVisible(true);
       message.success('扫描任务已启动');
@@ -260,7 +260,7 @@ const AnomalyList: React.FC = () => {
                   <Text strong>{rule.rule_chinese_name || rule.rule_name.replace('rule_', '')}</Text>
                   <div style={{ marginTop: '8px' }}>
                     {Object.entries(rule.details).map(([key, value]) => (
-                      <Text key={key} style={{ display: 'block' }}>{key}: {value}</Text>
+                      <Text key={key} style={{ display: 'block' }}>{key}: {typeof value === 'number' ? value.toFixed(4) : value}</Text>
                     ))}
                   </div>
                 </div>
