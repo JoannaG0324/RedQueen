@@ -1,6 +1,7 @@
 # 忽略引擎、模型和工具文件夹内的全部文件
 # redqueen/backend/src/engine/
 # redqueen/backend/src/models/
+redqueen/backend/tests/
 redqueen/backend/src/utils/config.py
 redqueen/backup/
         
