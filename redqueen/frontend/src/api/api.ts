@@ -3,7 +3,7 @@ import axios from 'axios';
 // 创建axios实例
 const api = axios.create({
   baseURL: 'http://localhost:8000/api',
-  timeout: 10000,
+  timeout: 60000, // 增加超时时间到60秒
   headers: {
     'Content-Type': 'application/json'
   }
@@ -32,9 +32,9 @@ export const getAnomalyStocks = async (targetDate: string) => {
 };
 
 // 获取异动个股详情
-export const getAnomalyStock = async (stockCode: string, targetDate: string) => {
+export const getAnomalyStock = async (stockCode: string, targetDate: string, getRisk: boolean = false) => {
   const response = await api.get(`/anomaly/stock/${stockCode}`, {
-    params: { target_date: targetDate }
+    params: { target_date: targetDate, get_risk: getRisk }
   });
   return response.data;
 };

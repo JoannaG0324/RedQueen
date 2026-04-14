@@ -13,8 +13,7 @@ from src.utils.database import get_db, Base, engine
 from src.models.persistence_models import PersistenceManager, TaskStatus
 from src.models.rule_models import RuleManager, TriggeredRule
 
-# 删除现有表并重新创建
-Base.metadata.drop_all(bind=engine)
+# 创建所有表（如果不存在）
 Base.metadata.create_all(bind=engine)
 from src.data.data_reader import DataReader
 from src.engine.rule_engine import RuleEngine
@@ -213,7 +212,9 @@ async def get_anomaly_stocks(target_date: date, db: Session = Depends(get_db)):
 
 
 @app.get("/api/anomaly/stock/{stock_code}", response_model=Dict[str, Any])
-async def get_anomaly_stock(stock_code: str, target_date: date, db: Session = Depends(get_db)):
+async def get_anomaly_stock(stock_code: str, target_date: date, get_risk: str = "false", db: Session = Depends(get_db)):
+    # 将字符串转换为布尔值
+    get_risk_bool = get_risk.lower() == "true"
     """获取异动个股详情"""
     persistence_manager = PersistenceManager(db)
     stock = persistence_manager.get_anomaly_stock_by_code_and_date(stock_code, target_date)
@@ -221,31 +222,24 @@ async def get_anomaly_stock(stock_code: str, target_date: date, db: Session = De
     if not stock:
         raise HTTPException(status_code=404, detail="股票不存在")
     
-    # 获取行业风险
+    # 获取行业风险 - 只有当 get_risk 为 True 时才调用AI
     industry_risk = None
-    if not stock.industry or stock.industry == "未知":
-        # 调用AI进行个股-行业映射
-        industry_result = ai_engine.map_stock_to_industry(stock_code, stock.stock_name)
-        if industry_result:
-            stock.industry = industry_result["industry"]
-            stock.industry_code = industry_result["industry_code"]
-            # 更新数据库中的行业信息
-            db.commit()
-            db.refresh(stock)
-    
-    if stock.industry and stock.industry != "未知":
-        # 检查是否已有行业风险数据
-        industry_risk = persistence_manager.get_industry_risk(stock.industry, scan_date)
+    if get_risk_bool:
+        # 检查是否已有行业风险数据（使用股票代码作为标识）
+        industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
         if not industry_risk:
-            # 调用AI获取行业风险
-            risk_data = ai_engine.get_industry_risk(stock.industry, scan_date.isoformat())
+            # 直接调用AI获取行业风险，AI会自动进行个股-行业映射
+            risk_data = ai_engine.get_industry_risk(f"{stock_code} {stock.stock_name}", target_date.isoformat())
             if risk_data:
                 persistence_manager.save_industry_risk({
-                    "industry": stock.industry,
-                    "analyze_date": scan_date,
+                    "industry": stock_code,  # 使用股票代码作为industry字段
+                    "analyze_date": target_date,
                     "risk_analysis": risk_data["risk_analysis"]
                 })
-                industry_risk = persistence_manager.get_industry_risk(stock.industry, scan_date)
+                industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
+    else:
+        # 不获取行业风险，只检查是否已有数据
+        industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
     
     return {
         "id": stock.id,
@@ -294,7 +288,7 @@ async def export_anomaly_stocks(target_date: date, db: Session = Depends(get_db)
         output,
         media_type="text/csv",
         headers={
-            "Content-Disposition": f"attachment; filename=anomaly_stocks_{scan_date.isoformat()}.csv"
+            "Content-Disposition": f"attachment; filename=anomaly_stocks_{target_date.isoformat()}.csv"
         }
     )
 

@@ -28,6 +28,7 @@ const AnomalyList: React.FC = () => {
   const [stockDetailModalVisible, setStockDetailModalVisible] = useState(false);
   const [selectedStock, setSelectedStock] = useState<any>(null);
   const [stockDetailLoading, setStockDetailLoading] = useState(false);
+  const [industryRiskLoading, setIndustryRiskLoading] = useState(false);
 
   // 触发扫描
   const handleTriggerScan = async () => {
@@ -70,6 +71,11 @@ const AnomalyList: React.FC = () => {
     return () => clearInterval(interval);
   }, [taskId, selectedDate]);
 
+  // 组件初始化时加载数据
+  useEffect(() => {
+    fetchStocks(selectedDate);
+  }, []);
+
   // 获取异动个股列表
   const fetchStocks = async (date: string) => {
     setLoading(true);
@@ -102,15 +108,34 @@ const AnomalyList: React.FC = () => {
 
   // 查看股票详情
   const handleViewStockDetail = async (stock_code: string) => {
+    // 先显示弹窗
     setStockDetailLoading(true);
+    setStockDetailModalVisible(true);
+    
     try {
-      const stockDetail = await getAnomalyStock(stock_code, selectedDate);
+      // 异步调用 API 获取股票详情（不包含行业风险分析）
+      const stockDetail = await getAnomalyStock(stock_code, selectedDate, false);
       setSelectedStock(stockDetail);
-      setStockDetailModalVisible(true);
     } catch (error) {
       message.error('获取股票详情失败');
     } finally {
       setStockDetailLoading(false);
+    }
+  };
+
+  // 手动触发获取行业风险分析
+  const handleGetIndustryRisk = async () => {
+    if (!selectedStock) return;
+    
+    setIndustryRiskLoading(true);
+    try {
+      // 调用 API 获取包含行业风险分析的股票详情
+      const stockDetail = await getAnomalyStock(selectedStock.stock_code, selectedDate, true);
+      setSelectedStock(stockDetail);
+    } catch (error) {
+      message.error('获取行业风险分析失败');
+    } finally {
+      setIndustryRiskLoading(false);
     }
   };
 
@@ -238,12 +263,7 @@ const AnomalyList: React.FC = () => {
         onCancel={() => setStockDetailModalVisible(false)}
         width={800}
       >
-        {stockDetailLoading ? (
-          <div style={{ textAlign: 'center', padding: '48px' }}>
-            <Spin size="large" />
-            <Text style={{ marginLeft: '16px' }}>正在加载股票详情...</Text>
-          </div>
-        ) : selectedStock ? (
+        {selectedStock ? (
           <div>
             <Descriptions bordered column={2}>
               <Descriptions.Item label="股票代码">{selectedStock.stock_code}</Descriptions.Item>
@@ -267,14 +287,61 @@ const AnomalyList: React.FC = () => {
               ))}
             </div>
             
-            {selectedStock.industry_risk && (
-              <div style={{ marginTop: '24px' }}>
+            <div style={{ marginTop: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <Title level={5}>行业风险分析</Title>
-                <div style={{ padding: '12px', border: '1px solid #e8e8e8', borderRadius: '4px', backgroundColor: '#f9f9f9' }}>
-                  <Text>{selectedStock.industry_risk}</Text>
-                </div>
+                {!selectedStock.industry_risk && (
+                  <Button 
+                    type="primary" 
+                    onClick={handleGetIndustryRisk}
+                    loading={industryRiskLoading}
+                  >
+                    获取风险分析
+                  </Button>
+                )}
               </div>
-            )}
+              {industryRiskLoading ? (
+                <div style={{ 
+                  padding: '48px', 
+                  textAlign: 'center', 
+                  border: '1px solid #e8e8e8', 
+                  borderRadius: '4px'
+                }}>
+                  <Spin size="large" />
+                  <Text style={{ marginLeft: '16px' }}>正在获取行业风险分析...</Text>
+                </div>
+              ) : selectedStock.industry_risk ? (
+                <div style={{ 
+                  padding: '16px', 
+                  border: '1px solid #e8e8e8', 
+                  borderRadius: '4px', 
+                  backgroundColor: '#f9f9f9',
+                  whiteSpace: 'pre-line',
+                  fontFamily: 'Arial, sans-serif',
+                  lineHeight: '1.6'
+                }}>
+                  <div dangerouslySetInnerHTML={{ 
+                    __html: selectedStock.industry_risk
+                      .replace(/### (.*?)/g, '<h3 style="margin: 16px 0 8px 0; font-size: 16px; font-weight: 600;">$1</h3>')
+                      .replace(/## (.*?)/g, '<h2 style="margin: 20px 0 12px 0; font-size: 18px; font-weight: 600;">$1</h2>')
+                      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                      .replace(/\* ([^*]+)/g, '<li style="margin-left: 20px; margin-bottom: 4px;">$1</li>')
+                      .replace(/\n\n/g, '</p><p>')
+                      .replace(/^(?!<h|<li|<p).*/g, '<p>$&</p>')
+                  }} />
+                </div>
+              ) : (
+                <div style={{ 
+                  padding: '48px', 
+                  border: '1px dashed #e8e8e8', 
+                  borderRadius: '4px', 
+                  textAlign: 'center',
+                  backgroundColor: '#fafafa'
+                }}>
+                  <Text type="secondary">点击上方按钮获取行业风险分析</Text>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div style={{ textAlign: 'center', padding: '48px' }}>
