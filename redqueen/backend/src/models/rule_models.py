@@ -135,6 +135,12 @@ class RuleManager:
                 "rule_detail": "当日振幅≥1.5倍20日均值，当日收涨，持续2日",
                 "rule_chinese_name": "振幅异动趋势识别",
                 "status": 1
+            },
+            {
+                "rule_name": "rule_exposure_frequency",
+                "rule_detail": "3日内出现超过2次异动规则命中或5日内出现超过3次异动规则命中",
+                "rule_chinese_name": "暴露频率异动",
+                "status": 1
             }
         ]
         

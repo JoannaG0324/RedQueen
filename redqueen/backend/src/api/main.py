@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import date, datetime
+from sqlalchemy import func, and_, text
+from datetime import date, datetime, timedelta
 import uuid
 import csv
 import io
@@ -12,6 +13,7 @@ from src.utils.database import get_db, Base, engine
 # 导入所有模型类，确保创建数据库表时包含所有表结构
 from src.models.persistence_models import PersistenceManager, TaskStatus
 from src.models.rule_models import RuleManager, TriggeredRule
+from src.models.stock_models import StockDailyQfq, IndustryThs, IndustryThsStock, StockDailyQfqCalc
 
 # 创建所有表（如果不存在）
 Base.metadata.create_all(bind=engine)
@@ -53,6 +55,17 @@ ai_engine = AIEngine()
 @app.post("/api/scan/trigger", response_model=Dict[str, Any])
 async def trigger_scan(background_tasks: BackgroundTasks, target_date: str = None, db: Session = Depends(get_db)):
     """手动触发全市场扫描"""
+    # 确定目标日期
+    if target_date:
+        target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    else:
+        target_date_obj = date.today()
+    
+    # 检查是否为交易日
+    data_reader = DataReader(db)
+    if not data_reader.is_trading_day(target_date_obj):
+        raise HTTPException(status_code=400, detail=f"{target_date_obj} 非交易日，无法执行扫描任务")
+    
     # 生成任务ID
     task_id = str(uuid.uuid4())
     
@@ -114,6 +127,7 @@ def perform_scan(task_id: str, db: Session, target_date_str: str = None):
         
         # 提取异动个股
         anomaly_stocks = []
+        processed_count = 0
         
         for stock_code, result in scan_results.items():
             if result["total_triggers"] > 0:
@@ -127,7 +141,10 @@ def perform_scan(task_id: str, db: Session, target_date_str: str = None):
                     rule_with_chinese["rule_chinese_name"] = rule_name_to_chinese.get(rule["rule_name"], rule["rule_name"])
                     triggered_rules_with_chinese.append(rule_with_chinese)
                 
-                # 构建异动个股数据（暂时不进行行业映射）
+                # 获取股票行业信息
+                industry_info = data_reader.get_stock_industry(stock_code)
+                
+                # 构建异动个股数据
                 stock_data = {
                     "stock_code": stock_code,
                     "stock_name": stock_name,
@@ -135,15 +152,57 @@ def perform_scan(task_id: str, db: Session, target_date_str: str = None):
                     "target_date": target_date,
                     "total_triggers": result["total_triggers"],
                     "triggered_rules": triggered_rules_with_chinese,
-                    "industry": "未知",
-                    "industry_code": ""
+                    "industry": industry_info["industry"] or "未知",
+                    "industry_code": industry_info["industry_code"] or ""
                 }
                 anomaly_stocks.append(stock_data)
             
             # 更新处理进度
-            processed = len(anomaly_stocks)
-            if processed % 100 == 0:
-                persistence_manager.update_scan_task(task_id, {"processed_stocks": processed})
+            processed_count += 1
+            if processed_count % 100 == 0:
+                persistence_manager.update_scan_task(task_id, {"processed_stocks": processed_count})
+        
+        # 计算日期范围用于暴露频率规则
+        from datetime import timedelta
+        three_day_start = target_date - timedelta(days=3)
+        five_day_start = target_date - timedelta(days=5)
+        
+        # 获取历史异动数据
+        historical_stocks = persistence_manager.get_anomaly_stocks_by_date_range(five_day_start, target_date)
+        
+        # 统计每个股票在不同时间范围内的异动次数
+        stock_frequency = {}
+        for stock in historical_stocks:
+            if stock.stock_code not in stock_frequency:
+                stock_frequency[stock.stock_code] = {'3_day': 0, '5_day': 0}
+            
+            # 计算5天内的次数
+            stock_frequency[stock.stock_code]['5_day'] += 1
+            
+            # 计算3天内的次数
+            if stock.target_date >= three_day_start:
+                stock_frequency[stock.stock_code]['3_day'] += 1
+        
+        # 检查暴露频率规则并更新异动个股数据
+        for stock_data in anomaly_stocks:
+            stock_code = stock_data['stock_code']
+            frequency = stock_frequency.get(stock_code, {'3_day': 0, '5_day': 0})
+            
+            # 检查是否满足暴露频率规则
+            if frequency['3_day'] >= 2 or frequency['5_day'] >= 3:
+                # 检查是否已存在该规则
+                rule_exists = any(rule['rule_name'] == 'rule_exposure_frequency' for rule in stock_data['triggered_rules'])
+                if not rule_exists:
+                    # 添加暴露频率规则
+                    stock_data['triggered_rules'].append({
+                        'rule_name': 'rule_exposure_frequency',
+                        'rule_chinese_name': '暴露频率异动',
+                        'details': {
+                            'three_day_count': frequency['3_day'],
+                            'five_day_count': frequency['5_day']
+                        }
+                    })
+                    stock_data['total_triggers'] += 1
         
         # 批量保存异动个股
         if anomaly_stocks:
@@ -155,7 +214,7 @@ def perform_scan(task_id: str, db: Session, target_date_str: str = None):
             {
                 "status": TaskStatus.COMPLETED,
                 "end_time": datetime.now(),
-                "processed_stocks": len(anomaly_stocks)
+                "processed_stocks": processed_count
             }
         )
         
@@ -297,3 +356,179 @@ async def export_anomaly_stocks(target_date: date, db: Session = Depends(get_db)
 async def health_check():
     """健康检查"""
     return {"status": "healthy"}
+
+
+@app.get("/api/stock/latest-trading-day")
+async def get_latest_trading_day(db: Session = Depends(get_db)):
+    """获取最新的交易日"""
+    # 查询 StockDailyQfq 表中最新的日期
+    latest_date = db.query(func.max(StockDailyQfq.date)).scalar()
+    return {"date": latest_date.isoformat() if latest_date else date.today().isoformat()}
+
+
+@app.get("/api/stock/list", response_model=List[Dict[str, Any]])
+async def get_stock_list(target_date: str, industry: str = "", stock_codes: str = "", db: Session = Depends(get_db)):
+    """获取股票列表"""
+    # 构建查询条件
+    conditions = []
+    conditions.append(f"sdqc.date = '{target_date}'")
+    
+    if industry:
+        conditions.append(f"it.industry_name = '{industry}'")
+    
+    if stock_codes:
+        # 解析股票代码列表
+        stock_code_list = stock_codes.split(",")
+        # 构建IN条件
+        stock_code_str = ",".join([f"'{code}'" for code in stock_code_list])
+        conditions.append(f"sdqc.stock_code IN ({stock_code_str})")
+    
+    condition_str = " AND ".join(conditions)
+    
+    # 构建 SQL 查询
+    query = f"""
+        SELECT sdqc.date, sdqc.stock_code, its.stock_name, 
+               it.industry_name as industry,
+               sd.close, sd.change_rate,
+               sdqc.growth_streak_days, sdqc.growth_streak_pct
+        FROM stock_daily_qfq_calc sdqc 
+        LEFT JOIN stock_daily_qfq sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date 
+        LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code 
+        LEFT JOIN industry_ths it ON it.industry_code = its.industry_code 
+        WHERE {condition_str}
+    """
+    
+    # 执行查询
+    result = db.execute(text(query))
+    rows = result.fetchall()
+    
+    # 构建返回数据
+    stock_data_list = []
+    for row in rows:
+        stock_data_list.append({
+            "date": row[0].isoformat() if row[0] else None,
+            "stock_code": row[1],
+            "stock_name": row[2],
+            "industry": row[3],
+            "close": row[4],
+            "change_rate": row[5],
+            "growth_streak_days": row[6],
+            "growth_streak_pct": row[7]
+        })
+    
+    return stock_data_list
+
+
+@app.get("/api/stock/kline/{stock_code}", response_model=List[Dict[str, Any]])
+async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None, db: Session = Depends(get_db)):
+    """获取股票 K 线数据"""
+    data_reader = DataReader(db)
+    
+    # 确定目标日期
+    if end_date:
+        # 如果提供了结束日期，使用该日期
+        target_date = datetime.fromisoformat(end_date).date()
+    else:
+        # 否则使用最新的交易日
+        latest_trading_day = db.query(func.max(StockDailyQfq.date)).scalar()
+        if not latest_trading_day:
+            return []
+        target_date = latest_trading_day
+    
+    # 计算起始日期
+    start_date = target_date - timedelta(days=days)
+    
+    # 获取股票数据
+    stock_data = data_reader.get_stock_data_by_date(stock_code, target_date, days)
+    
+    if not stock_data:
+        return []
+    
+    # 构建 K 线数据
+    kline_data = []
+    for i, date_str in enumerate(stock_data["dates"]):
+        current_date = datetime.fromisoformat(date_str).date()
+        
+        # 获取技术指标数据
+        tech_data = data_reader.db.query(StockDailyQfqCalc).filter(
+            and_(
+                StockDailyQfqCalc.stock_code == stock_code,
+                StockDailyQfqCalc.date == current_date
+            )
+        ).first()
+        
+        ma5 = tech_data.ma5 if tech_data else None
+        ma10 = tech_data.ma10 if tech_data else None
+        ma20 = tech_data.ma20 if tech_data else None
+        ma60 = tech_data.ma60 if tech_data else None
+        ma120 = tech_data.ma120 if tech_data else None
+        
+        kline_data.append({
+            "date": date_str,
+            "open": stock_data["open"][i] if i < len(stock_data["open"]) else None,
+            "close": stock_data["close"][i] if i < len(stock_data["close"]) else None,
+            "high": stock_data["high"][i] if i < len(stock_data["high"]) else None,
+            "low": stock_data["low"][i] if i < len(stock_data["low"]) else None,
+            "volume": stock_data["volume"][i] if i < len(stock_data["volume"]) else None,
+            "amount": stock_data["amount"][i] if i < len(stock_data["amount"]) else None,
+            "change_rate": stock_data["change_rate"][i] if i < len(stock_data["change_rate"]) else None,
+            "ma5": ma5,
+            "ma10": ma10,
+            "ma20": ma20,
+            "ma60": ma60,
+            "ma120": ma120
+        })
+    
+    return kline_data
+
+
+from pydantic import BaseModel
+
+
+class AnalyzeRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/api/ai/analyze", response_model=Dict[str, Any])
+async def analyze_opportunity_stocks(request: AnalyzeRequest, db: Session = Depends(get_db)):
+    """分析机会个股"""
+    try:
+        # 导入prompt模板
+        from src.utils.prompts import OPPORTUNITY_ANALYSIS_PROMPT
+        
+        # 使用模板构建prompt
+        prompt = OPPORTUNITY_ANALYSIS_PROMPT.format(user_input=request.prompt)
+        
+        # 调用AI引擎分析
+        result = ai_engine.call_doubao_api(prompt)
+        
+        if not result:
+            raise HTTPException(status_code=500, detail="AI分析失败")
+        
+        # 提取分析结果
+        analysis = ""
+        if "choices" in result and isinstance(result["choices"], list):
+            for choice in result["choices"]:
+                if "message" in choice and "content" in choice["message"]:
+                    analysis = choice["message"]["content"]
+                    break
+        elif "output" in result and isinstance(result["output"], list):
+            for item in result["output"]:
+                if "content" in item:
+                    if isinstance(item["content"], list):
+                        for content_item in item["content"]:
+                            if "text" in content_item:
+                                analysis = content_item["text"]
+                                break
+                    elif isinstance(item["content"], str):
+                        analysis = item["content"]
+                    break
+        
+        if not analysis:
+            raise HTTPException(status_code=500, detail="无法提取分析结果")
+        
+        return {
+            "analysis": analysis
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")

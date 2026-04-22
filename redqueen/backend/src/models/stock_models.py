@@ -81,12 +81,20 @@ class StockInfo(Base):
     market = Column(Text)
 
 
+class IndustryThs(Base):
+    """同花顺行业分类表"""
+    __tablename__ = "industry_ths"
+    
+    industry_code = Column(Text, primary_key=True)
+    industry_name = Column(Text)
+    edit_date = Column(Date)
+
+
 class IndustryThsStock(Base):
-    """同花顺行业成分股对应表"""
+    """个股对应同花顺行业表"""
     __tablename__ = "industry_ths_stock"
     
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    stock_code = Column(Text)
+    stock_code = Column(Text, primary_key=True)
     stock_name = Column(Text)
-    industry_code = Column(Text)
+    industry_code = Column(Text, index=True)
     edit_date = Column(Date)

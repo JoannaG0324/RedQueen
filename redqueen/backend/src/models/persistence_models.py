@@ -102,6 +102,13 @@ class PersistenceManager:
             AnomalyStock.target_date == target_date
         ).first()
     
+    def get_anomaly_stocks_by_date_range(self, start_date: Date, end_date: Date) -> List[AnomalyStock]:
+        """按日期范围获取异动个股"""
+        return self.db.query(AnomalyStock).filter(
+            AnomalyStock.target_date >= start_date,
+            AnomalyStock.target_date <= end_date
+        ).all()
+    
     def save_industry_risk(self, risk_data: Dict[str, Any]) -> IndustryRisk:
         """保存行业风险数据"""
         # 检查是否已存在相同行业和日期的风险数据

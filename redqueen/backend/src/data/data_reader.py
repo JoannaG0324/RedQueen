@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 
-from src.models.stock_models import StockDailyQfq, StockDailyQfqCalc, StockDailyFlow, StockInfo
+from src.models.stock_models import StockDailyQfq, StockDailyQfqCalc, StockDailyFlow, StockInfo, IndustryThs, IndustryThsStock
 
 
 class DataReader:
@@ -60,7 +60,7 @@ class DataReader:
         cleaned_data = self._clean_and_standardize_data(price_data, tech_data, flow_data)
         
         # 数据校验
-        if not self._validate_data(cleaned_data):
+        if not self._validate_data(cleaned_data, days):
             return None
         
         return cleaned_data
@@ -87,6 +87,7 @@ class DataReader:
         # 构建标准化数据
         standardized_data = {
             "dates": [d.isoformat() for d in all_dates],
+            "open": [],
             "close": [],
             "high": [],
             "low": [],
@@ -107,6 +108,7 @@ class DataReader:
         for d in all_dates:
             # 价格数据
             price = price_dict.get(d)
+            standardized_data["open"].append(price.open if price else None)
             standardized_data["close"].append(price.close if price else None)
             standardized_data["high"].append(price.high if price else None)
             standardized_data["low"].append(price.low if price else None)
@@ -138,16 +140,40 @@ class DataReader:
         
         return standardized_data
     
-    def _validate_data(self, data: Dict[str, Any]) -> bool:
+    def _validate_data(self, data: Dict[str, Any], days: int = 60) -> bool:
         """数据校验"""
-        # 检查数据长度
-        if len(data["dates"]) < 30:
+        # 检查数据长度，根据传入的 days 参数动态调整
+        # 对于短期数据（如 20 天），要求至少有 10 天的数据
+        min_days = max(10, int(days * 0.5))
+        if len(data["dates"]) < min_days:
             return False
         
         # 检查关键指标是否有足够的数据
-        for key in ["close", "volume", "ma20"]:
+        for key in ["close", "volume"]:
             valid_count = sum(1 for x in data[key] if x is not None)
-            if valid_count < len(data[key]) * 0.8:
+            if valid_count < len(data[key]) * 0.6:
                 return False
         
         return True
+    
+    def get_stock_industry(self, stock_code: str) -> Dict[str, str]:
+        """获取股票对应的同花顺行业信息"""
+        # 查询个股对应的行业
+        industry_stock = self.db.query(IndustryThsStock).filter(IndustryThsStock.stock_code == stock_code).first()
+        
+        if not industry_stock:
+            return {"industry": None, "industry_code": None}
+        
+        # 查询行业名称
+        industry = self.db.query(IndustryThs).filter(IndustryThs.industry_code == industry_stock.industry_code).first()
+        
+        if not industry:
+            return {"industry": None, "industry_code": industry_stock.industry_code}
+        
+        return {"industry": industry.industry_name, "industry_code": industry.industry_code}
+    
+    def is_trading_day(self, target_date: date) -> bool:
+        """检查指定日期是否为交易日"""
+        # 查询 StockDailyQfq 表中是否有 target_date 的数据
+        count = self.db.query(StockDailyQfq).filter(StockDailyQfq.date == target_date).count()
+        return count > 0
