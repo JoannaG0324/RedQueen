@@ -23,14 +23,10 @@ class DataReader:
     
     def get_stock_data_by_date(self, stock_code: str, target_date: date, days: int = 60) -> Optional[Dict[str, Any]]:
         """获取指定股票在指定日期的历史数据"""
-        # 计算起始日期
-        start_date = target_date - timedelta(days=days)
-        
-        # 获取基础行情数据
+        # 获取基础行情数据（从最早日期到target_date）
         price_data = self.db.query(StockDailyQfq).filter(
             and_(
                 StockDailyQfq.stock_code == stock_code,
-                StockDailyQfq.date >= start_date,
                 StockDailyQfq.date <= target_date
             )
         ).order_by(StockDailyQfq.date).all()
@@ -38,20 +34,18 @@ class DataReader:
         if not price_data:
             return None
         
-        # 获取技术指标数据
+        # 获取技术指标数据（从最早日期到target_date）
         tech_data = self.db.query(StockDailyQfqCalc).filter(
             and_(
                 StockDailyQfqCalc.stock_code == stock_code,
-                StockDailyQfqCalc.date >= start_date,
                 StockDailyQfqCalc.date <= target_date
             )
         ).order_by(StockDailyQfqCalc.date).all()
         
-        # 获取资金流向数据
+        # 获取资金流向数据（从最早日期到target_date）
         flow_data = self.db.query(StockDailyFlow).filter(
             and_(
                 StockDailyFlow.stock_code == stock_code,
-                StockDailyFlow.date >= start_date,
                 StockDailyFlow.date <= target_date
             )
         ).order_by(StockDailyFlow.date).all()
@@ -62,6 +56,15 @@ class DataReader:
         # 数据校验
         if not self._validate_data(cleaned_data, days):
             return None
+        
+        # 只返回最近的days天数据
+        if len(cleaned_data["dates"]) > days:
+            # 计算起始索引
+            start_index = len(cleaned_data["dates"]) - days
+            # 截断所有数据数组
+            for key in cleaned_data:
+                if isinstance(cleaned_data[key], list):
+                    cleaned_data[key] = cleaned_data[key][start_index:]
         
         return cleaned_data
     
@@ -142,9 +145,9 @@ class DataReader:
     
     def _validate_data(self, data: Dict[str, Any], days: int = 60) -> bool:
         """数据校验"""
-        # 检查数据长度，根据传入的 days 参数动态调整
-        # 对于短期数据（如 20 天），要求至少有 10 天的数据
-        min_days = max(10, int(days * 0.5))
+        # 检查数据长度，使用合理的最小数据长度要求
+        # 对于任何天数，要求至少有 20 天的数据
+        min_days = min(20, max(10, int(days * 0.5)))
         if len(data["dates"]) < min_days:
             return False
         
@@ -177,3 +180,134 @@ class DataReader:
         # 查询 StockDailyQfq 表中是否有 target_date 的数据
         count = self.db.query(StockDailyQfq).filter(StockDailyQfq.date == target_date).count()
         return count > 0
+    
+    def get_industry_data(self, target_date: date) -> List[Dict[str, Any]]:
+        """获取行业数据"""
+        try:
+            from sqlalchemy import text
+            # 使用用户提供的SQL查询获取实际数据
+            query = """
+            SELECT 
+                f.date, 
+                f.industry_name, 
+                m.industry_code, 
+                f.net_inflow, 
+                f.up_count, 
+                f.down_count, 
+                f.change_percent, 
+                i.close as close_price, 
+                c.ma3, c.ma5, c.ma10, c.ma20, c.ma60 
+            FROM industry_flow_ODS f 
+            JOIN industry_ths m ON f.industry_name = m.industry_name 
+            LEFT JOIN industry_ths_index i ON m.industry_code = i.industry_code AND i.date = f.date 
+            LEFT JOIN industry_ths_index_calc c ON m.industry_code = c.industry_code AND c.date = f.date 
+            WHERE f.date = :filter_date 
+            ORDER BY f.net_inflow DESC
+            """
+            
+            # 执行查询
+            result = self.db.execute(text(query), {"filter_date": target_date})
+            rows = result.fetchall()
+            
+            # 处理查询结果
+            industry_data = []
+            for row in rows:
+                # 计算成分股数量
+                count = row.up_count + row.down_count
+                # 计算上涨比例
+                up_pct = (row.up_count / count * 100) if count > 0 else 0
+                # 计算偏离度
+                dev_3 = ((row.close_price - row.ma3) / row.ma3 * 100) if row.ma3 and row.ma3 > 0 else 0
+                dev_5 = ((row.close_price - row.ma5) / row.ma5 * 100) if row.ma5 and row.ma5 > 0 else 0
+                dev_20 = ((row.close_price - row.ma20) / row.ma20 * 100) if row.ma20 and row.ma20 > 0 else 0
+                dev_60 = ((row.close_price - row.ma60) / row.ma60 * 100) if row.ma60 and row.ma60 > 0 else 0
+                
+                industry_data.append({
+                    "industry": row.industry_name,
+                    "industry_code": row.industry_code,
+                    "count": count,
+                    "up_pct": round(up_pct, 2),
+                    "net_inflow": float(round(row.net_inflow, 2)),
+                    "change_percent": float(round(row.change_percent, 2)),
+                    "dev_3": round(dev_3, 2),
+                    "dev_5": round(dev_5, 2),
+                    "dev_20": round(dev_20, 2),
+                    "dev_60": round(dev_60, 2)
+                })
+            
+            return industry_data
+        except Exception as e:
+            print(f"获取行业数据失败: {str(e)}")
+            raise
+    
+    def get_industry_kline_data(self, industry_code: str, days: int, end_date: date) -> List[Dict[str, Any]]:
+        """获取行业K线数据"""
+        try:
+            from sqlalchemy import text
+            # 查询行业K线数据，获取从最早日期到end_date的所有数据
+            query = """
+            SELECT 
+                date, 
+                open, 
+                close, 
+                high, 
+                low, 
+                volume, 
+                amount 
+            FROM industry_ths_index 
+            WHERE industry_code = :industry_code 
+            AND date <= :end_date 
+            ORDER BY date
+            """
+            
+            # 执行查询
+            result = self.db.execute(text(query), {
+                "industry_code": industry_code,
+                "end_date": end_date
+            })
+            rows = result.fetchall()
+            
+            # 处理查询结果
+            kline_data = []
+            close_prices = []
+            
+            for row in rows:
+                kline_data.append({
+                    "date": row.date.isoformat(),
+                    "open": row.open,
+                    "close": row.close,
+                    "high": row.high,
+                    "low": row.low,
+                    "volume": row.volume,
+                    "amount": row.amount,
+                    "ma5": None,
+                    "ma10": None,
+                    "ma20": None,
+                    "ma60": None
+                })
+                close_prices.append(row.close)
+            
+            # 计算MA值
+            for i in range(len(kline_data)):
+                # 计算MA5：只在有至少5个数据点时计算
+                if i >= 4:
+                    kline_data[i]["ma5"] = sum(close_prices[i-4:i+1]) / 5
+                # 计算MA10：只在有至少10个数据点时计算
+                if i >= 9:
+                    kline_data[i]["ma10"] = sum(close_prices[i-9:i+1]) / 10
+                # 计算MA20：只在有至少20个数据点时计算
+                if i >= 19:
+                    kline_data[i]["ma20"] = sum(close_prices[i-19:i+1]) / 20
+                # 计算MA60：只在有至少60个数据点时计算
+                if i >= 59:
+                    kline_data[i]["ma60"] = sum(close_prices[i-59:i+1]) / 60
+            
+            # 只返回最近的days天数据
+            if len(kline_data) > days:
+                kline_data = kline_data[-days:]
+            
+            return kline_data
+        except Exception as e:
+            print(f"获取行业K线数据失败: {str(e)}")
+            raise
+

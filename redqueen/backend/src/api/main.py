@@ -435,11 +435,12 @@ async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None,
             return []
         target_date = latest_trading_day
     
-    # 计算起始日期
-    start_date = target_date - timedelta(days=days)
+    # 使用合理的默认值，避免数据校验失败
+    # 当days超过365时，使用365作为数据校验的标准
+    validate_days = min(days, 365)
     
     # 获取股票数据
-    stock_data = data_reader.get_stock_data_by_date(stock_code, target_date, days)
+    stock_data = data_reader.get_stock_data_by_date(stock_code, target_date, validate_days)
     
     if not stock_data:
         return []
@@ -532,3 +533,51 @@ async def analyze_opportunity_stocks(request: AnalyzeRequest, db: Session = Depe
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+
+
+@app.get("/api/industry/list", response_model=List[Dict[str, Any]])
+async def get_industry_list(target_date: str, db: Session = Depends(get_db)):
+    """获取行业列表数据"""
+    try:
+        # 解析日期
+        target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+        
+        # 检查是否为交易日
+        data_reader = DataReader(db)
+        if not data_reader.is_trading_day(target_date_obj):
+            raise HTTPException(status_code=400, detail=f"{target_date} 非交易日，无法获取行业数据")
+        
+        # 获取行业数据
+        industry_data = data_reader.get_industry_data(target_date_obj)
+        
+        return industry_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取行业数据失败: {str(e)}")
+
+
+@app.get("/api/industry/kline/{industry_code}", response_model=List[Dict[str, Any]])
+async def get_industry_kline(industry_code: str, days: int = 20, end_date: str = None, db: Session = Depends(get_db)):
+    """获取行业K线数据"""
+    try:
+        # 确定结束日期
+        if end_date:
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        else:
+            end_date_obj = date.today()
+        
+        # 检查是否为交易日
+        data_reader = DataReader(db)
+        if not data_reader.is_trading_day(end_date_obj):
+            # 如果不是交易日，找到最近的交易日
+            for i in range(1, 10):
+                prev_date = end_date_obj - timedelta(days=i)
+                if data_reader.is_trading_day(prev_date):
+                    end_date_obj = prev_date
+                    break
+        
+        # 获取行业K线数据
+        kline_data = data_reader.get_industry_kline_data(industry_code, days, end_date_obj)
+        
+        return kline_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取行业K线数据失败: {str(e)}")
