@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Button, Table, message, Space, Typography, Progress, Modal, Descriptions, Spin } from 'antd';
-import { ReloadOutlined, ExportOutlined, LoadingOutlined } from '@ant-design/icons';
+import { Button, Table, message, Space, Typography, Progress, Modal, Descriptions, Spin, Select, Input, Tooltip } from 'antd';
+import { ReloadOutlined, ExportOutlined, LoadingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { triggerScan, getScanStatus, getAnomalyStocks, exportAnomalyStocks, getAnomalyStock } from '../api/api';
 
 const { Title, Text } = Typography;
@@ -17,18 +17,40 @@ interface AnomalyStock {
   created_at: string;
 }
 
+// 规则详情映射
+const ruleDetails: Record<string, string> = {
+  'rule_ma_crossover': '均线交叉趋势异动 - MA5上穿MA20，量能确认，连续2日收盘价大于MA20',
+  'rule_trendline_breakout': '趋势线突破异动 - 突破幅度1%，连续2日不跌破趋势线',
+  'rule_dow_theory': '道氏高低点趋势异动 - 更高低点和更高高点',
+  'rule_macd_divergence': 'MACD趋势背离异动 - 价格创新低，但DIF未创新低，金叉信号',
+  'rule_bollinger_band_breakout': '布林带通道突破异动 - 带宽收敛，向上突破，持续2日',
+  'rule_quantile_regression': '分位数回归趋势异动 - 斜率由负变正',
+  'rule_volume_price_divergence': '量价背离趋势异动 - 价格创新低，成交量未创新低，3日内收阳',
+  'rule_obv_trend': 'OBV能量潮趋势异动 - OBV创新高，价格未创新高，OBV上穿OBV均线',
+  'rule_capital_flow': '主力资金流趋势异动 - 5日累计净流入占比≥5%，连续3日资金为正',
+  'rule_turnover_trend': '换手率趋势异动 - 当日换手率≥2倍均值，股价处于相对低位，当日收涨，持续2日',
+  'rule_atr_volatility': 'ATR波动率异动 - ATR从10%历史分位上升幅度≥50%，3日内收盘价持续上行',
+  'rule_volatility_expansion': '波动率收敛-发散异动 - 波动率降至历史20%分位并持续10日',
+  'rule_amplitude_trend': '振幅异动趋势识别 - 振幅异常增大'
+};
+
 const AnomalyList: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [scanLoading, setScanLoading] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<any>(null);
   const [stocks, setStocks] = useState<AnomalyStock[]>([]);
+  const [filteredStocks, setFilteredStocks] = useState<AnomalyStock[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [progressModalVisible, setProgressModalVisible] = useState(false);
   const [stockDetailModalVisible, setStockDetailModalVisible] = useState(false);
   const [selectedStock, setSelectedStock] = useState<any>(null);
   const [stockDetailLoading, setStockDetailLoading] = useState(false);
   const [industryRiskLoading, setIndustryRiskLoading] = useState(false);
+  const [selectedIndustry, setSelectedIndustry] = useState<string>('');
+  const [selectedRules, setSelectedRules] = useState<string[]>([]);
+  const [industries, setIndustries] = useState<string[]>([]);
+  const [rules, setRules] = useState<Array<{ label: string; value: string }>>([]);
 
   // 触发扫描
   const handleTriggerScan = async () => {
@@ -38,8 +60,12 @@ const AnomalyList: React.FC = () => {
       setTaskId(result.task_id);
       setProgressModalVisible(true);
       message.success('扫描任务已启动');
-    } catch (error) {
-      message.error('启动扫描任务失败');
+    } catch (error: any) {
+      if (error.response && error.response.status === 400) {
+        message.error(error.response.data.detail || '非交易日');
+      } else {
+        message.error('启动扫描任务失败');
+      }
     } finally {
       setScanLoading(false);
     }
@@ -74,7 +100,7 @@ const AnomalyList: React.FC = () => {
   // 组件初始化时加载数据
   useEffect(() => {
     fetchStocks(selectedDate);
-  }, []);
+  }, [selectedDate]);
 
   // 获取异动个股列表
   const fetchStocks = async (date: string) => {
@@ -82,6 +108,29 @@ const AnomalyList: React.FC = () => {
     try {
       const data = await getAnomalyStocks(date);
       setStocks(data);
+      
+      // 提取行业列表
+      const industrySet = new Set<string>();
+      data.forEach(stock => {
+        if (stock.industry) {
+          industrySet.add(stock.industry);
+        }
+      });
+      setIndustries(Array.from(industrySet).sort());
+      
+      // 提取规则列表
+      const ruleMap = new Map<string, { label: string; value: string }>();
+      data.forEach(stock => {
+        stock.triggered_rules.forEach(rule => {
+          if (!ruleMap.has(rule.rule_name)) {
+            ruleMap.set(rule.rule_name, { label: rule.rule_chinese_name, value: rule.rule_name });
+          }
+        });
+      });
+      setRules(Array.from(ruleMap.values()).sort((a, b) => a.label.localeCompare(b.label)));
+      
+      // 初始化过滤后的股票列表
+      setFilteredStocks(data);
     } catch (error) {
       message.error('获取异动个股列表失败');
     } finally {
@@ -144,8 +193,44 @@ const AnomalyList: React.FC = () => {
     if (date) {
       const newDate = typeof date === 'string' ? date : date.format('YYYY-MM-DD');
       setSelectedDate(newDate);
+      setSelectedIndustry('');
+      setSelectedRules([]);
       fetchStocks(newDate);
     }
+  };
+  
+  // 筛选逻辑
+  const handleFilter = (industry?: string, rules?: string[]) => {
+    let filtered = stocks;
+    const currentIndustry = industry !== undefined ? industry : selectedIndustry;
+    const currentRules = rules !== undefined ? rules : selectedRules;
+    
+    // 按行业筛选
+    if (currentIndustry) {
+      filtered = filtered.filter(stock => stock.industry === currentIndustry);
+    }
+    
+    // 按规则筛选
+    if (currentRules.length > 0) {
+      filtered = filtered.filter(stock => {
+        const stockRuleNames = stock.triggered_rules.map((rule: any) => rule.rule_name);
+        return currentRules.some(rule => stockRuleNames.includes(rule));
+      });
+    }
+    
+    setFilteredStocks(filtered);
+  };
+  
+  // 行业变化处理
+  const handleIndustryChange = (value: string | null) => {
+    setSelectedIndustry(value || '');
+    handleFilter(value || '');
+  };
+  
+  // 规则变化处理
+  const handleRulesChange = (value: string[]) => {
+    setSelectedRules(value);
+    handleFilter(undefined, value);
   };
 
   // 表格列定义
@@ -190,7 +275,40 @@ const AnomalyList: React.FC = () => {
 
   return (
     <div>
-      <Space style={{ marginBottom: '24px' }}>
+      <Space style={{ marginBottom: '24px', flexWrap: 'wrap' }} align="center">
+        <Select
+          placeholder="选择所属行业"
+          style={{ width: 200 }}
+          value={selectedIndustry}
+          onChange={handleIndustryChange}
+          allowClear
+          showSearch
+          filterOption={(input, option) =>
+            (option?.children as unknown as string).toLowerCase().includes(input.toLowerCase())
+          }
+        >
+          {industries.map(industry => (
+            <Select.Option key={industry} value={industry}>{industry}</Select.Option>
+          ))}
+        </Select>
+        <Select
+          placeholder="选择触发规则"
+          style={{ width: 300 }}
+          mode="multiple"
+          value={selectedRules}
+          onChange={handleRulesChange}
+          allowClear
+        >
+          {rules.map(rule => (
+            <Select.Option key={rule.value} value={rule.value}>{rule.label}</Select.Option>
+          ))}
+        </Select>
+        <input 
+          type="date" 
+          value={selectedDate} 
+          onChange={(e) => handleDateChange(e.target.value)}
+          style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px' }}
+        />
         <Button 
           type="primary" 
           icon={<ReloadOutlined />} 
@@ -199,12 +317,6 @@ const AnomalyList: React.FC = () => {
         >
           开始扫描
         </Button>
-        <input 
-          type="date" 
-          value={selectedDate} 
-          onChange={(e) => handleDateChange(e.target.value)}
-          style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px' }}
-        />
         <Button 
           icon={<ExportOutlined />} 
           onClick={handleExport}
@@ -216,7 +328,7 @@ const AnomalyList: React.FC = () => {
 
       <Table
         columns={columns}
-        dataSource={stocks}
+        dataSource={filteredStocks}
         rowKey="id"
         loading={loading}
         pagination={{ pageSize: 20 }}
@@ -277,7 +389,12 @@ const AnomalyList: React.FC = () => {
               <Title level={5}>触发规则详情</Title>
               {selectedStock.triggered_rules.map((rule: any, index: number) => (
                 <div key={index} style={{ marginBottom: '16px', padding: '12px', border: '1px solid #e8e8e8', borderRadius: '4px' }}>
-                  <Text strong>{rule.rule_chinese_name || rule.rule_name.replace('rule_', '')}</Text>
+                  <Space>
+                    <Text strong>{rule.rule_chinese_name || rule.rule_name.replace('rule_', '')}</Text>
+                    <Tooltip title={ruleDetails[rule.rule_name] || '暂无规则详情'}>
+                      <InfoCircleOutlined style={{ color: '#1890ff', cursor: 'help' }} />
+                    </Tooltip>
+                  </Space>
                   <div style={{ marginTop: '8px' }}>
                     {Object.entries(rule.details).map(([key, value]) => (
                       <Text key={key} style={{ display: 'block' }}>{key}: {typeof value === 'number' ? value.toFixed(4) : value}</Text>

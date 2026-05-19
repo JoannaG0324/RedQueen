@@ -10,11 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/charts": "^2.6.7",
     "antd": "^6.3.5",
     "axios": "^1.14.0",
     "dayjs": "^1.11.20",
+    "echarts": "^6.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-echarts": "^0.1.1",
     "react-router-dom": "^7.13.2",
     "recharts": "^3.8.1"
   },

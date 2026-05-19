@@ -391,7 +391,13 @@ class RuleEngine:
         net_amount = np.array(data["net_amount_wan"])
         total_amount = np.array(data["total_amount_wan"])
         
-        if len(net_amount) < 30:
+        if len(net_amount) < 30 or len(total_amount) < 30:
+            return False, {}
+        
+        if np.any(np.isnan(net_amount)) or np.any(np.isnan(total_amount)):
+            return False, {}
+        
+        if np.any(net_amount == None) or np.any(total_amount == None):
             return False, {}
         
         # 计算5日累计净流入
@@ -461,7 +467,13 @@ class RuleEngine:
         atr14 = np.array(data["atr14"])
         close = np.array(data["close"])
         
-        if len(atr14) < 30:
+        if len(atr14) < 30 or len(close) < 30:
+            return False, {}
+        
+        if np.any(np.isnan(atr14)) or np.any(np.isnan(close)):
+            return False, {}
+        
+        if np.any(atr14 == None) or np.any(close == None):
             return False, {}
         
         # ATR从10%历史分位上升幅度≥50%

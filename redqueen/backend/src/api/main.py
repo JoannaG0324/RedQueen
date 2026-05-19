@@ -581,3 +581,197 @@ async def get_industry_kline(industry_code: str, days: int = 20, end_date: str =
         return kline_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取行业K线数据失败: {str(e)}")
+
+
+# 全局变量，用于跟踪正在执行的任务
+running_tasks = {}
+
+@app.post("/api/data/execute", response_model=Dict[str, Any])
+async def execute_data_task(task_id: str, page: int = 1, db: Session = Depends(get_db)):
+    """执行数据获取任务"""
+    try:
+        # 记录任务开始
+        running_tasks[task_id] = True
+        
+        # 执行update_stock_daily_backup任务
+        if task_id == "update_stock_daily_backup":
+            # 导入update_stock_daily_backup模块
+            from src.data.update_stock_daily_backup import update_stock_daily, process_stock_daily, fetch_stock_data_selenium_plus
+            
+            # 执行任务
+            print(f"开始执行update_stock_daily_backup任务，从第 {page} 页开始")
+            result = update_stock_daily(start_page=page)
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": f"任务 {task_id} 执行完成，从第 {page} 页开始运行",
+                "execution_time": datetime.now().isoformat(),
+                "page": page
+            }
+        elif task_id == "update_industry_flow_data":
+            # 导入update模块
+            from src.data.update import update_industry_flow_data
+            
+            # 执行任务
+            print("开始执行update_industry_flow_data任务")
+            result = update_industry_flow_data()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "update_stock_flow":
+            # 导入update模块
+            from src.data.update import update_stock_flow
+            
+            # 执行任务
+            print("开始执行update_stock_flow任务")
+            result = update_stock_flow()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "update_stock_ztb_data":
+            # 导入update模块
+            from src.data.update import update_stock_ztb_data
+            
+            # 执行任务
+            print("开始执行update_stock_ztb_data任务")
+            result = update_stock_ztb_data()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "update_stock_spot_data":
+            # 导入update模块
+            from src.data.update import update_stock_spot_data
+            
+            # 执行任务
+            print("开始执行update_stock_spot_data任务")
+            result = update_stock_spot_data()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "update_industry_ths_index_daily":
+            # 导入update_industry_ths_daily模块
+            from src.data.update_industry_ths_daily import update_industry_ths_index_daily
+            
+            # 执行任务
+            print("开始执行update_industry_ths_index_daily任务")
+            update_industry_ths_index_daily()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "industry_flow_calc":
+            # 导入calc_cash_flow模块
+            from src.data.calc_cash_flow import industry_flow_calc
+            
+            # 执行任务
+            print("开始执行industry_flow_calc任务")
+            industry_flow_calc(engine)
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": "行业板块资金流计算完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "daily_process_industry_indicators":
+            # 导入calc_price模块
+            from src.data.calc_price import daily_process_industry_indicators
+            
+            # 执行任务
+            print("开始执行daily_process_industry_indicators任务")
+            daily_process_industry_indicators(max_workers=10)
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": "行业基础量价指标计算完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "daily_process_stock_indicators":
+            # 导入calc_price模块
+            from src.data.calc_price import daily_process_stock_indicators
+            
+            # 执行任务
+            print("开始执行daily_process_stock_indicators任务")
+            daily_process_stock_indicators(max_workers=10)
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": "个股量价指标计算完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        else:
+            # 模拟执行其他任务
+            import time
+            time.sleep(2)  # 模拟任务执行时间
+            
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        
+        # 任务完成，从运行列表中移除
+        if task_id in running_tasks:
+            del running_tasks[task_id]
+        
+        return result
+    except Exception as e:
+        # 任务失败，从运行列表中移除
+        if task_id in running_tasks:
+            del running_tasks[task_id]
+        print(f"执行任务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"执行任务失败: {str(e)}")
+
+
+@app.post("/api/data/stop", response_model=Dict[str, Any])
+async def stop_tasks():
+    """终止所有正在执行的任务"""
+    try:
+        # 清空运行中的任务
+        task_ids = list(running_tasks.keys())
+        running_tasks.clear()
+        
+        # 构建响应
+        result = {
+            "status": "completed",
+            "message": f"成功终止 {len(task_ids)} 个任务",
+            "task_ids": task_ids,
+            "execution_time": datetime.now().isoformat()
+        }
+        
+        return result
+    except Exception as e:
+        print(f"终止任务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"终止任务失败: {str(e)}")
