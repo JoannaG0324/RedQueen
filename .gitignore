@@ -3,7 +3,9 @@
 # redqueen/backend/src/models/
 redqueen/backend/tests/
 redqueen/backend/src/utils/config.py
+redqueen/backend/drivers/
 redqueen/backup/
+
         
 # 忽略__pycache__文件夹
 __pycache__/
