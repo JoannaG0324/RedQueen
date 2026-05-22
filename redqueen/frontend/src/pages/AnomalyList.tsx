@@ -47,7 +47,7 @@ const AnomalyList: React.FC = () => {
   const [selectedStock, setSelectedStock] = useState<any>(null);
   const [stockDetailLoading, setStockDetailLoading] = useState(false);
   const [industryRiskLoading, setIndustryRiskLoading] = useState(false);
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('');
+  const [selectedIndustry, setSelectedIndustry] = useState<string | undefined>(undefined);
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
   const [industries, setIndustries] = useState<string[]>([]);
   const [rules, setRules] = useState<Array<{ label: string; value: string }>>([]);

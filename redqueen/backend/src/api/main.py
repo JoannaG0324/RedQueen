@@ -587,7 +587,7 @@ async def get_industry_kline(industry_code: str, days: int = 20, end_date: str =
 running_tasks = {}
 
 @app.post("/api/data/execute", response_model=Dict[str, Any])
-async def execute_data_task(task_id: str, page: int = 1, db: Session = Depends(get_db)):
+async def execute_data_task(task_id: str, page: str = "1", db: Session = Depends(get_db)):
     """执行数据获取任务"""
     try:
         # 记录任务开始
@@ -598,15 +598,29 @@ async def execute_data_task(task_id: str, page: int = 1, db: Session = Depends(g
             # 导入update_stock_daily_backup模块
             from src.data.update_stock_daily_backup import update_stock_daily, process_stock_daily, fetch_stock_data_selenium_plus
             
+            # 解析页码参数
+            start_page = 1
+            end_page = None
+            
+            if "-" in page:
+                # 自定义范围格式："start-end" 或 "start-"
+                parts = page.split("-")
+                start_page = int(parts[0]) if parts[0].isdigit() else 1
+                if len(parts) > 1 and parts[1].isdigit():
+                    end_page = int(parts[1])
+            else:
+                # 单页码格式
+                start_page = int(page) if page.isdigit() else 1
+            
             # 执行任务
-            print(f"开始执行update_stock_daily_backup任务，从第 {page} 页开始")
-            result = update_stock_daily(start_page=page)
+            print(f"开始执行update_stock_daily_backup任务，从第 {start_page} 页开始" + (f"，到第 {end_page} 页结束" if end_page else ""))
+            result = update_stock_daily(start_page=start_page, end_page=end_page)
             
             # 构建任务结果
             result = {
                 "task_id": task_id,
                 "status": "completed" if result else "failed",
-                "message": f"任务 {task_id} 执行完成，从第 {page} 页开始运行",
+                "message": f"任务 {task_id} 执行完成，从第 {start_page} 页开始运行" + (f"，到第 {end_page} 页结束" if end_page else ""),
                 "execution_time": datetime.now().isoformat(),
                 "page": page
             }

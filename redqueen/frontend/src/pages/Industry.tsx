@@ -34,9 +34,10 @@ const Industry: React.FC = () => {
   // 状态管理
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [industries, setIndustries] = useState<IndustryData[]>([]);
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('');
+  const [selectedIndustry, setSelectedIndustry] = useState<string | undefined>(undefined);
   const [selectedIndustryCode, setSelectedIndustryCode] = useState<string>('');
   const [timeRange, setTimeRange] = useState<string>('90');
+  const [searchIndustry, setSearchIndustry] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: keyof IndustryData; direction: 'ascend' | 'descend' } | null>(null);
@@ -462,8 +463,15 @@ const Industry: React.FC = () => {
     setSortConfig({ key, direction });
   };
 
+  // 搜索过滤后的数据
+  const filteredIndustries = searchIndustry 
+    ? industries.filter(item => 
+        item.industry.toLowerCase().includes(searchIndustry.toLowerCase())
+      )
+    : industries;
+
   // 排序后的数据
-  const sortedIndustries = [...industries].sort((a, b) => {
+  const sortedIndustries = [...filteredIndustries].sort((a, b) => {
     if (!sortConfig) return 0;
     const aValue = a[sortConfig.key];
     const bValue = b[sortConfig.key];
@@ -690,6 +698,13 @@ const Industry: React.FC = () => {
           value={selectedDate}
           onChange={(e) => handleDateChange(e.target.value)}
           style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '32px', marginRight: '12px' }}
+        />
+        <Input
+          placeholder="Search by Industry"
+          style={{ width: 200, marginRight: '12px' }}
+          value={searchIndustry}
+          onChange={(e) => setSearchIndustry(e.target.value)}
+          allowClear
         />
         <Button
           type="primary"

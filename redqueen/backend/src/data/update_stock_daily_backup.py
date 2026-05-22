@@ -213,8 +213,8 @@ def fetch_stock_data_selenium():
         print("未获取到任何数据")
         return pd.DataFrame()
 
-def fetch_stock_data_selenium_plus(start_page):
-    """使用Selenium获取股票数据，支持从指定页码开始处理"""
+def fetch_stock_data_selenium_plus(start_page, end_page=None):
+    """使用Selenium获取股票数据，支持从指定页码开始处理，可选指定结束页码"""
     # 使用已经定义好的setup_chrome_driver函数创建driver实例
     driver = setup_chrome_driver()
     
@@ -309,19 +309,12 @@ def fetch_stock_data_selenium_plus(start_page):
     # 2. 获取当前页的表格数据
     all_data = []
     
-    if start_page <=50: 
-        total_pages = 50
-    if 50 <start_page <=100: 
-        total_pages = 100 
-    if 100 <start_page <=150: 
-        total_pages = 150 
-    if 150 <start_page <=200: 
-        total_pages =200
-    if 200 <start_page <=250: 
-        total_pages =250
-
-
-
+    # 如果指定了结束页码，则使用指定的结束页码
+    # 否则使用页面上实际获取的total_pages
+    if end_page is not None:
+        total_pages = end_page
+    # 如果没有指定结束页码，保留页面上获取的实际总页数
+    # 这样选择"251-"时会从251页到实际的最后一页
 
     # total_pages + 1
     for current_page in range(start_page, total_pages + 1):
@@ -408,9 +401,9 @@ def fetch_stock_data_selenium_plus(start_page):
         print("未获取到任何数据")
         return pd.DataFrame()
 
-def process_stock_daily(start_page=1):
+def process_stock_daily(start_page=1, end_page=None):
     """更新股票日线数据"""
-    temp_df = fetch_stock_data_selenium_plus(start_page=start_page) #1-51-101-151-201-251
+    temp_df = fetch_stock_data_selenium_plus(start_page=start_page, end_page=end_page) #1-51-101-151-201-251
     
     # 根据实际数据结构重命名列
     column_mapping = {
@@ -493,9 +486,9 @@ def process_stock_daily(start_page=1):
     print("数据处理完成，数据形状:", temp_df.shape)
     return temp_df
 
-def update_stock_daily(start_page=1):
+def update_stock_daily(start_page=1, end_page=None):
     """更新股票日线数据"""
-    temp_df = process_stock_daily(start_page=start_page)
+    temp_df = process_stock_daily(start_page=start_page, end_page=end_page)
     
     # 检查是否有数据
     if temp_df.empty:

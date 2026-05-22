@@ -41,7 +41,7 @@ const StockList: React.FC = () => {
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('');
+  const [selectedIndustry, setSelectedIndustry] = useState<string | undefined>(undefined);
   const [industries, setIndustries] = useState<string[]>([]);
   const [selectedStock, setSelectedStock] = useState<string>('');
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
@@ -49,8 +49,9 @@ const StockList: React.FC = () => {
   const [stockNames, setStockNames] = useState<Record<string, string>>({});
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedStockData, setSelectedStockData] = useState<any>(null);
-  const [selectedRule, setSelectedRule] = useState<string>('');
+  const [selectedRule, setSelectedRule] = useState<string | undefined>(undefined);
   const [availableRules, setAvailableRules] = useState<string[]>([]);
+  const [stockNameFilter, setStockNameFilter] = useState<string>('');
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [aiInput, setAiInput] = useState<string>('');
   const [aiLoading, setAiLoading] = useState(false);
@@ -120,18 +121,24 @@ const StockList: React.FC = () => {
         setAvailableRules(Array.from(ruleSet).sort());
         
         setStocks(mergedData);
-        // 应用规则筛选
+        // 应用规则筛选和股票名称过滤
+        let filtered = mergedData;
         if (selectedRule) {
-          const filtered = mergedData.filter((stock: any) => {
+          filtered = filtered.filter((stock: any) => {
             if (!stock.triggered_rules) return false;
             return stock.triggered_rules.some((rule: any) => 
               (rule.rule_chinese_name || rule.rule_name) === selectedRule
             );
           });
-          setFilteredStocks(filtered);
-        } else {
-          setFilteredStocks(mergedData);
         }
+        // 应用股票名称模糊查询
+        if (stockNameFilter) {
+          const filterLower = stockNameFilter.toLowerCase();
+          filtered = filtered.filter((stock: any) => 
+            stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
+          );
+        }
+        setFilteredStocks(filtered);
       } catch (error) {
         console.error('获取异动数据失败:', error);
         // 如果获取异动数据失败，使用过滤后的数据
@@ -546,19 +553,45 @@ const StockList: React.FC = () => {
   const handleRuleChange = (value: string | null) => {
     setSelectedRule(value || '');
     // 重新应用筛选
+    let filtered = stocks;
     if (value) {
-      // 从当前股票列表中筛选，因为当前列表已经包含了AI分析的结果
-      const filtered = stocks.filter((stock: any) => {
+      filtered = filtered.filter((stock: any) => {
         if (!stock.triggered_rules) return false;
         return stock.triggered_rules.some((rule: any) => 
           (rule.rule_chinese_name || rule.rule_name) === value
         );
       });
-      setFilteredStocks(filtered);
-    } else {
-      // 如果没有选择规则，显示当前股票列表（包含AI分析结果）
-      setFilteredStocks(stocks);
     }
+    // 应用股票名称模糊查询
+    if (stockNameFilter) {
+      const filterLower = stockNameFilter.toLowerCase();
+      filtered = filtered.filter((stock: any) => 
+        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
+      );
+    }
+    setFilteredStocks(filtered);
+  };
+
+  // 股票名称过滤变化处理
+  const handleStockNameFilterChange = (value: string) => {
+    setStockNameFilter(value);
+    // 重新应用筛选
+    let filtered = stocks;
+    if (selectedRule) {
+      filtered = filtered.filter((stock: any) => {
+        if (!stock.triggered_rules) return false;
+        return stock.triggered_rules.some((rule: any) => 
+          (rule.rule_chinese_name || rule.rule_name) === selectedRule
+        );
+      });
+    }
+    if (value) {
+      const filterLower = value.toLowerCase();
+      filtered = filtered.filter((stock: any) => 
+        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
+      );
+    }
+    setFilteredStocks(filtered);
   };
 
   // 清除AI分析结果
@@ -882,6 +915,13 @@ const StockList: React.FC = () => {
             <Select.Option key={rule} value={rule}>{rule}</Select.Option>
           ))}
         </Select>
+         <Input
+          placeholder="Search by Name"
+          style={{ width: 200, marginRight: '12px' }}
+          value={stockNameFilter}
+          onChange={(e) => handleStockNameFilterChange(e.target.value)}
+          allowClear
+        />
         {aiApplied && (
           <div style={{ position: 'relative', display: 'inline-block', marginRight: '12px' }}>
             <div style={{ 
