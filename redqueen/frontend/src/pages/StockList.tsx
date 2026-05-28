@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, Table, message, Space, Typography, Select, Input, Card, Tooltip, Modal, Radio, Drawer } from 'antd';
+import { Button, Table, message, Space, Typography, Select, Input, Card, Tooltip, Modal, Radio, Drawer, Switch } from 'antd';
 import { CalendarOutlined, RocketOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
 import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI } from '../api/api';
@@ -58,6 +58,8 @@ const StockList: React.FC = () => {
   const [aiResult, setAiResult] = useState<string>('');
   const [aiStockCodes, setAiStockCodes] = useState<string[]>([]);
   const [aiApplied, setAiApplied] = useState<boolean>(false);
+  const [showLatestDateKLine, setShowLatestDateKLine] = useState<boolean>(false); // K线图显示最新日期数据开关
+  const [latestTradingDate, setLatestTradingDate] = useState<string>(new Date().toISOString().split('T')[0]); // 实际最新交易日
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
 
@@ -540,6 +542,11 @@ const StockList: React.FC = () => {
       setSelectedIndustry('');
       setAiApplied(false);
       fetchStocks(newDate, '');
+      
+      // 如果已经选择了股票，重新获取K线图数据，使用新的日期作为结束日期
+      if (selectedStock) {
+        fetchKLineData(selectedStock, parseInt(timeRange), newDate);
+      }
     }
   };
 
@@ -618,19 +625,18 @@ const StockList: React.FC = () => {
   const handleStockSelect = (stockCode: string) => {
     console.log('Selected stock:', stockCode);
     setSelectedStock(stockCode);
-    fetchKLineData(stockCode, parseInt(timeRange), selectedDate);
+    // 根据开关状态决定使用哪个日期作为K线图结束日期
+    const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
+    fetchKLineData(stockCode, parseInt(timeRange), kLineEndDate);
   };
 
   // 时间范围变化处理
   const handleTimeRangeChange = (value: string) => {
     setTimeRange(value);
-    if (selectedStock && kLineData.length > 0) {
-      // 只更新缩放范围，不重新获取数据
-      const displayDays = value === 'ALL' ? 365 : parseInt(value);
-      const startIndex = Math.max(0, kLineData.length - displayDays);
-      const startPercent = (startIndex / kLineData.length) * 100;
-      const endPercent = 100;
-      renderKLineChart(kLineData, startPercent, endPercent);
+    if (selectedStock) {
+      // 根据开关状态决定使用哪个日期作为K线图结束日期
+      const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
+      fetchKLineData(selectedStock, parseInt(value), kLineEndDate);
     }
   };
 
@@ -720,6 +726,7 @@ const StockList: React.FC = () => {
       try {
         const result = await getLatestTradingDay();
         const latestDate = result.date;
+        setLatestTradingDate(latestDate); // 保存最新交易日
         setSelectedDate(latestDate);
         fetchStocks(latestDate, '', aiApplied ? aiStockCodes : undefined);
       } catch (error) {
@@ -1039,6 +1046,20 @@ const StockList: React.FC = () => {
                 <Radio.Button value="120">120D</Radio.Button>
                 <Radio.Button value="ALL">ALL</Radio.Button>
               </Radio.Group>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+                <Switch
+                  checked={showLatestDateKLine}
+                  onChange={(checked) => {
+                    setShowLatestDateKLine(checked);
+                    if (selectedStock) {
+                      const kLineEndDate = checked ? latestTradingDate : selectedDate;
+                      fetchKLineData(selectedStock, parseInt(timeRange), kLineEndDate);
+                    }
+                  }}
+                  checkedChildren="显示最新"
+                  unCheckedChildren="查询日期"
+                />
+              </div>
             </Space>
           }>
             <div style={{ flex: 1, width: '100%', minHeight: '500px' }}>

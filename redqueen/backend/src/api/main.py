@@ -602,15 +602,38 @@ async def execute_data_task(task_id: str, page: str = "1", db: Session = Depends
             start_page = 1
             end_page = None
             
-            if "-" in page:
-                # 自定义范围格式："start-end" 或 "start-"
+            if page == "251-":
+                # 选择"251-"时，从第251页到实际最后一页
+                start_page = 251
+                end_page = None
+            elif "-" in page:
+                # 自定义范围格式："start-end"
                 parts = page.split("-")
                 start_page = int(parts[0]) if parts[0].isdigit() else 1
                 if len(parts) > 1 and parts[1].isdigit():
                     end_page = int(parts[1])
             else:
-                # 单页码格式
-                start_page = int(page) if page.isdigit() else 1
+                # 单页码格式，前端选择的是区间起始页
+                # "1" 表示 1-50, "51" 表示 51-100, "101" 表示 101-150, 
+                # "151" 表示 151-200, "201" 表示 201-250, "251" 表示 251-
+                if page.isdigit():
+                    page_num = int(page)
+                    start_page = page_num
+                    # 根据起始页计算结束页（每50页一个区间）
+                    if page_num == 1:
+                        end_page = 50
+                    elif page_num == 51:
+                        end_page = 100
+                    elif page_num == 101:
+                        end_page = 150
+                    elif page_num == 151:
+                        end_page = 200
+                    elif page_num == 201:
+                        end_page = 250
+                    elif page_num == 251:
+                        end_page = None  # 到实际最后一页
+                    else:
+                        start_page = page_num
             
             # 执行任务
             print(f"开始执行update_stock_daily_backup任务，从第 {start_page} 页开始" + (f"，到第 {end_page} 页结束" if end_page else ""))
