@@ -52,9 +52,9 @@ export const getIndustryKLineData = async (industryCode: string, days: number = 
 };
 
 // 获取异动个股详情
-export const getAnomalyStock = async (stockCode: string, targetDate: string, getRisk: boolean = false) => {
+export const getAnomalyStock = async (stockCode: string, targetDate: string) => {
   const response = await api.get(`/anomaly/stock/${stockCode}`, {
-    params: { target_date: targetDate, get_risk: getRisk }
+    params: { target_date: targetDate }
   });
   return response.data;
 };
@@ -104,8 +104,14 @@ export const getLatestTradingDay = async () => {
   return response.data;
 };
 
-// 分析机会个股
-export const analyzeOpportunityStocks = async (prompt: string) => {
-  const response = await api.post('/ai/analyze', { prompt });
+// 分析机会个股（支持指定Skill）
+export const analyzeOpportunityStocks = async (prompt: string, skillName: string = 'opportunity_analysis') => {
+  const response = await api.post('/ai/analyze', { prompt, skill_name: skillName });
+  return response.data;
+};
+
+// 获取所有Skill列表
+export const getSkills = async () => {
+  const response = await api.get('/ai/skills');
   return response.data;
 };

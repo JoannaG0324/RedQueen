@@ -20,7 +20,6 @@ interface StockDetailData {
   triggered_rules: TriggeredRule[];
   industry: string;
   industry_code: string;
-  industry_risk: string;
   created_at: string;
 }
 
@@ -130,12 +129,6 @@ const StockDetail: React.FC = () => {
           </div>
         ))}
       </Card>
-
-      {stockData.industry_risk && (
-        <Card title="行业风险分析">
-          <Paragraph>{stockData.industry_risk}</Paragraph>
-        </Card>
-      )}
     </div>
   );
 };

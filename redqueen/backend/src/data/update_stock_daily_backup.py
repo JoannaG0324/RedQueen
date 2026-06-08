@@ -29,6 +29,8 @@ DATABASE = settings.DB_NAME
 
 engine = create_engine(f"mysql+pymysql://{USER}:{PASSWORD}@{HOST}/{DATABASE}")
 
+from .config.cookies import LOGIN_COOKIES
+
 def setup_chrome_driver():
     """
     设置Chrome浏览器驱动
@@ -51,7 +53,6 @@ def setup_chrome_driver():
     chrome_options.add_experimental_option('useAutomationExtension', False)
     # 关键参数：保持窗口开启
     chrome_options.add_experimental_option("detach", True)  
-
     
     # 使用上述选项启动 Chrome 浏览器实例
     # Try to find local driver first
@@ -70,7 +71,29 @@ def setup_chrome_driver():
 
     # 通过 JavaScript 重写 navigator.webdriver 属性为 undefined，进一步伪装成真实用户浏览器
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
     return driver
+
+def add_login_cookies(driver, base_url):
+    """
+    向浏览器添加登录状态 Cookies，绕过登录限制
+    """
+    print("正在注入登录 Cookies...")
+    
+    # 先访问基础 URL 以设置正确的域名
+    driver.get(base_url)
+    
+    # 添加所有登录 Cookies
+    for cookie in LOGIN_COOKIES:
+        try:
+            driver.add_cookie(cookie)
+            print(f"已添加 Cookie: {cookie['name']}")
+        except Exception as e:
+            print(f"添加 Cookie {cookie['name']} 失败: {e}")
+    
+    # 刷新页面使 Cookies 生效
+    driver.refresh()
+    print("Cookies 注入完成，页面已刷新")
 
 def fetch_stock_data_selenium():
     """使用Selenium获取股票数据"""
@@ -81,7 +104,8 @@ def fetch_stock_data_selenium():
     base_url = "https://quote.eastmoney.com/center/gridlist.html#hs_a_board"
     print(f"第一步：打开基础URL: {base_url}")
     
-    driver.get(base_url)
+    # 先注入登录 Cookies，绕过登录限制
+    add_login_cookies(driver, base_url)
     
     # 等待页面加载完成
     time.sleep(5)
@@ -222,10 +246,11 @@ def fetch_stock_data_selenium_plus(start_page, end_page=None):
     base_url = "https://quote.eastmoney.com/center/gridlist.html#hs_a_board"
     print(f"第一步：打开基础URL: {base_url}")
     
-    driver.get(base_url)
+    # 先注入登录 Cookies，绕过登录限制
+    add_login_cookies(driver, base_url)
     
     # 等待页面加载完成
-    time.sleep(20)
+    time.sleep(10)
     
     # 如果指定了起始页码且不是第一页，直接跳转到指定页码
     if start_page > 1:

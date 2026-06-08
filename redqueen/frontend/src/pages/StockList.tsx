@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button, Table, message, Space, Typography, Select, Input, Card, Tooltip, Modal, Radio, Drawer, Switch } from 'antd';
-import { CalendarOutlined, RocketOutlined } from '@ant-design/icons';
+import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI } from '../api/api';
+import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills } from '../api/api';
 
 const { Title, Text } = Typography;
 
@@ -14,6 +14,8 @@ interface StockData {
   change_rate: number;
   growth_streak_days: number;
   growth_streak_pct: number;
+  market_cap_r?: number;
+  volume_pct?: number;
   industry?: string;
   total_triggers?: number;
   triggered_rules?: any[];
@@ -33,6 +35,28 @@ interface KLineData {
   ma20?: number;
   ma60?: number;
   ma120?: number;
+}
+
+interface ChatMessage {
+  id: string;
+  type: 'user' | 'system';
+  content: string;
+  skillUsed?: string;
+  timestamp: Date;
+}
+
+interface SkillInfo {
+  name: string;
+  version: string;
+  description: string;
+}
+
+interface AnalysisHistory {
+  id: string;
+  prompt: string;
+  stockCodes: string[];
+  skillUsed: string;
+  timestamp: Date;
 }
 
 const StockList: React.FC = () => {
@@ -58,6 +82,14 @@ const StockList: React.FC = () => {
   const [aiResult, setAiResult] = useState<string>('');
   const [aiStockCodes, setAiStockCodes] = useState<string[]>([]);
   const [aiApplied, setAiApplied] = useState<boolean>(false);
+  
+  // 对话相关状态
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [selectedSkill, setSelectedSkill] = useState<string>('opportunity_analysis');
+  
+  // 分析历史记录
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistory[]>([]);
   const [showLatestDateKLine, setShowLatestDateKLine] = useState<boolean>(false); // K线图显示最新日期数据开关
   const [latestTradingDate, setLatestTradingDate] = useState<string>(new Date().toISOString().split('T')[0]); // 实际最新交易日
   const chartRef = useRef<HTMLDivElement>(null);
@@ -245,7 +277,7 @@ const StockList: React.FC = () => {
           },
           position: function(point: any) {
             // 调整提示框的位置，显示在鼠标左侧，避免显示在屏幕边缘
-            return [point[0] - 100, point[1] - 10];
+            return [point[0] - 250, point[1] + 10];
           },
           textStyle: {
             textAlign: 'left'
@@ -302,7 +334,10 @@ const StockList: React.FC = () => {
           }
         },
       legend: {
-        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量']
+        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
+        top: 5,
+        left: 80,
+        align: 'left'
       },
       dataZoom: [
         {
@@ -317,61 +352,69 @@ const StockList: React.FC = () => {
           start: startPercent,
           end: endPercent,
           height: 20,
-          bottom: 0,
+          bottom: -5,
           zoomLock: false
         }
       ],
       grid: [
         {
-          left: '3%',
-          right: '4%',
-          top: '3%',
-          height: '60%',
-          containLabel: true
+          left: 80,
+          right: 40,
+          top: 45,
+          bottom: '35%',
+          containLabel: false
         },
         {
-          left: '3%',
-          right: '4%',
-          top: '70%',
-          height: '20%',
-          containLabel: true
+          left: 80,
+          right: 40,
+          top: '65%',
+          bottom: 30,
+          containLabel: false
         }
       ],
       xAxis: [
         {
           type: 'category',
-          boundaryGap: false,
+          boundaryGap: true,
           data: data.map(item => item.date),
-          axisLabel: {
-            formatter: function(value: any) {
-              return value;
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          axisPointer: {
-            type: 'shadow'
-          },
-          axisLine: {
-            show: true
-          },
           axisTick: {
-            show: true
+            show: false
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: false
           }
         },
         {
           type: 'category',
-          boundaryGap: false,
+          boundaryGap: true,
           data: data.map(item => item.date),
           gridIndex: 1,
-          axisLabel: {
-            formatter: function(value: any) {
-              return value;
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          axisLine: {
-            show: true
-          },
           axisTick: {
-            show: true
+            alignWithLabel: true
+          },
+          axisLabel: {
+            show: true,
+            color: '#333',
+            fontSize: 11,
+            align: 'center'
+          },
+          splitLine: {
+            show: false
           }
         }
       ],
@@ -379,16 +422,28 @@ const StockList: React.FC = () => {
         {
           type: 'value',
           scale: true,
-          splitNumber: 5,
-          axisLabel: {
-            formatter: function(value: any) {
-              return Math.round(value);
+          splitNumber: 4,
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          splitArea: {
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            color: '#333',
+            fontSize: 13,
+            formatter: function(value: any) {
+              return value.toFixed(2);
+            }
+          },
+          splitLine: {
             show: true,
-            areaStyle: {
-              color: ['rgba(240, 240, 240, 0.2)', 'rgba(255, 255, 255, 0.2)']
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
             }
           }
         },
@@ -397,9 +452,27 @@ const StockList: React.FC = () => {
           scale: true,
           gridIndex: 1,
           splitNumber: 2,
-          show: false
+          axisLine: {
+            show: false
+          },
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
+            }
+          }
         }
       ],
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }]
+      },
       series: [
         {
           name: 'K 线',
@@ -473,9 +546,7 @@ const StockList: React.FC = () => {
       ]
     };
 
-    // 使用 silent 模式更新图表，避免动画卡顿
-    chartInstance.current.setOption(option, true);
-    // 确保图表使用容器的完整高度
+    chartInstance.current.setOption(option);
     chartInstance.current.resize();
   };
 
@@ -621,6 +692,22 @@ const StockList: React.FC = () => {
     }
   };
 
+  // 应用历史分析结果到查询
+  const applyHistoryAnalysis = (stockCodes: string[], prompt: string) => {
+    console.log('应用历史分析结果，股票代码:', stockCodes);
+    setAiStockCodes(stockCodes);
+    fetchStocks(selectedDate, selectedIndustry, stockCodes);
+    setDrawerVisible(false);
+    setAiApplied(true);
+    message.success(`已应用历史分析: "${prompt.substring(0, 30)}..."`);
+  };
+
+  // 删除历史记录
+  const deleteHistoryItem = (id: string) => {
+    setAnalysisHistory(prev => prev.filter(item => item.id !== id));
+    message.success('已删除历史记录');
+  };
+
   // 股票选择处理
   const handleStockSelect = (stockCode: string) => {
     console.log('Selected stock:', stockCode);
@@ -640,7 +727,7 @@ const StockList: React.FC = () => {
     }
   };
 
-  // 调用豆包API分析机会个股
+  // 调用AI分析（对话形式）
   const analyzeOpportunityStocks = async () => {
     if (!aiInput.trim()) {
       message.warning('请输入分析内容');
@@ -648,60 +735,45 @@ const StockList: React.FC = () => {
     }
     
     setAiLoading(true);
-    setAiResult('');
+    
+    // 添加用户消息到对话历史
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      type: 'user',
+      content: aiInput,
+      timestamp: new Date()
+    };
+    setChatMessages(prev => [...prev, userMessage]);
     
     try {
-      // 直接传递用户输入内容
-      const result = await analyzeOpportunityStocksAPI(aiInput);
+      // 调用AI分析（传递选中的Skill）
+      const result = await analyzeOpportunityStocksAPI(aiInput, selectedSkill);
       setAiResult(result.analysis);
       
-      // 提取股票代码
-      console.log('API返回结果:', result.analysis);
+      // 添加系统响应到对话历史
+      const systemMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'system',
+        content: result.analysis,
+        skillUsed: result.metadata?.skill_name || selectedSkill,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, systemMessage]);
       
-      // 尝试多种方式解析股票代码
-      let stockCodes: string[] = [];
+      // 使用后端返回的stock_list字段（已自动提取股票代码）
+      const stockCodes = result.stock_list || [];
       
-      // 方式1：匹配"机会个股：["开头的数组
-      const stockCodeMatch = result.analysis.match(/机会个股：\s*\[(.*?)\]/s);
-      if (stockCodeMatch) {
-        try {
-          const stockCodesStr = `[${stockCodeMatch[1]}]`;
-          const parsedCodes = JSON.parse(stockCodesStr);
-          if (Array.isArray(parsedCodes)) {
-            stockCodes = parsedCodes;
-          }
-        } catch (e) {
-          console.error('解析股票代码失败:', e);
-        }
-      }
-      
-      // 方式2：直接查找所有6位数字的股票代码
-      if (stockCodes.length === 0) {
-        const stockCodeRegex = /[0-9]{6}/g;
-        const matchedCodes = result.analysis.match(stockCodeRegex) || [];
-        stockCodes = matchedCodes;
-      }
-      
-      // 方式3：匹配"opportunities"或"stocks"等英文关键词后的股票代码
-      if (stockCodes.length === 0) {
-        const enMatch = result.analysis.match(/(opportunities|stocks)[:：]\s*\[(.*?)\]/i);
-        if (enMatch) {
-          try {
-            const stockCodesStr = `[${enMatch[2]}]`;
-            const parsedCodes = JSON.parse(stockCodesStr);
-            if (Array.isArray(parsedCodes)) {
-              stockCodes = parsedCodes;
-            }
-          } catch (e) {
-            console.error('解析英文格式股票代码失败:', e);
-          }
-        }
-      }
-      
-      // 去重并过滤有效的股票代码
-      stockCodes = [...new Set(stockCodes.filter(code => /^[0-9]{6}$/.test(code)))];
-      
+      // 保存到历史记录（只保存有股票代码的结果）
       if (stockCodes.length > 0) {
+        const historyItem: AnalysisHistory = {
+          id: Date.now().toString(),
+          prompt: aiInput,
+          stockCodes: stockCodes,
+          skillUsed: result.metadata?.skill_name || selectedSkill,
+          timestamp: new Date()
+        };
+        setAnalysisHistory(prev => [historyItem, ...prev]);
+        
         setAiStockCodes(stockCodes);
         message.success(`Analysis Complete. ${stockCodes.length} opportunities identified.`);
       } else {
@@ -710,15 +782,38 @@ const StockList: React.FC = () => {
       }
     } catch (error: any) {
       console.error('AI分析失败:', error);
+      // 添加错误消息到对话历史
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'system',
+        content: `分析失败: ${error.response?.data?.detail || '请稍后重试'}`,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+      
       if (error.response && error.response.data && error.response.data.detail) {
         message.error(`AI分析失败: ${error.response.data.detail}`);
       } else {
         message.error('AI分析失败，请稍后重试');
       }
     } finally {
+      setAiInput('');
       setAiLoading(false);
     }
   };
+
+  // 加载Skill列表
+  useEffect(() => {
+    const loadSkills = async () => {
+      try {
+        const skillsData = await getSkills();
+        setSkills(skillsData);
+      } catch (error) {
+        console.error('加载Skill列表失败:', error);
+      }
+    };
+    loadSkills();
+  }, []);
 
   // 组件初始化时加载数据
   useEffect(() => {
@@ -801,6 +896,22 @@ const StockList: React.FC = () => {
       },
     },
     {
+      title: 'Turnover%',
+      dataIndex: 'turnover',
+      key: 'turnover',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.turnover || 0) - (b.turnover || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text>
+            {value.toFixed(2)}
+          </Text>
+        );
+      },
+    },
+    {
       title: 'U-days',
       dataIndex: 'growth_streak_days',
       key: 'growth_streak_days',
@@ -819,6 +930,39 @@ const StockList: React.FC = () => {
         return (
           <Text>
             {value.toFixed(2)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Market(R)',
+      dataIndex: 'market_cap_r',
+      key: 'market_cap_r',
+      width: 120,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.market_cap_r || 0) - (b.market_cap_r || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text>
+            {value.toFixed(2)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Volume%',
+      dataIndex: 'volume_pct',
+      key: 'volume_pct',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.volume_pct || 0) - (b.volume_pct || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        const color = value >= 0 ? '#ef232a' : '#11c26d';
+        return (
+          <Text style={{ color: color }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(2)}%
           </Text>
         );
       },
@@ -1118,43 +1262,175 @@ const StockList: React.FC = () => {
 
       {/* AI分析抽屉 */}
       <Drawer
-        title="Ask AI"
+        title="AI分析"
         placement="right"
         onClose={() => setDrawerVisible(false)}
         open={drawerVisible}
-        size={500}
+        size={600}
       >
-        <div style={{ marginBottom: '20px' }}>
-          <Input.TextArea
-            placeholder="请输入分析内容，例如：新能源汽车行业政策利好"
-            value={aiInput}
-            onChange={(e) => setAiInput(e.target.value)}
-            rows={6}
-            style={{ marginBottom: '16px' }}
-          />
-          <Button
-            type="primary"
-            onClick={analyzeOpportunityStocks}
-            loading={aiLoading}
-            style={{ marginRight: '8px' }}
+        {/* Skill选择器 */}
+        <div style={{ marginBottom: '16px' }}>
+          <Text type="secondary" style={{ marginRight: '8px' }}>Skill：</Text>
+          <Select
+            value={selectedSkill}
+            onChange={(value) => setSelectedSkill(value)}
+            style={{ width: 200 }}
           >
-            Ask
-          </Button>
-          <Button onClick={applyAiAnalysis} disabled={aiStockCodes.length === 0}>
-            Apply
-          </Button>
+            {skills.map(skill => (
+              <Select.Option key={skill.name} value={skill.name}>
+                {skill.description}
+              </Select.Option>
+            ))}
+          </Select>
         </div>
-        <div style={{ marginTop: '20px' }}>
-          <Title level={5}>分析结果</Title>
-          {aiLoading ? (
-            <Text>分析中，请稍候...</Text>
-          ) : aiResult ? (
-            <div style={{ whiteSpace: 'pre-wrap', border: '1px solid #f0f0f0', padding: '12px', borderRadius: '4px' }}>
-              {aiResult}
+
+        {/* 对话历史区域 */}
+        <div style={{ 
+          height: '350px', 
+          overflowY: 'auto', 
+          border: '1px solid #f0f0f0', 
+          borderRadius: '8px',
+          padding: '12px',
+          marginBottom: '16px',
+          backgroundColor: '#fafafa'
+        }}>
+          {chatMessages.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
+              <p>开始对话</p>
             </div>
           ) : (
-            <Text>请输入分析内容并点击分析按钮</Text>
+            <div>
+              {chatMessages.map((message) => (
+                <div key={message.id} style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                    {message.type === 'user' ? (
+                      <>
+                        <UserOutlined style={{ fontSize: '20px', marginRight: '8px', color: '#1890ff' }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 'bold', marginBottom: '4px', color: '#1890ff' }}>
+                            我
+                          </div>
+                          <div style={{ backgroundColor: '#1890ff', color: 'white', padding: '8px 12px', borderRadius: '0 8px 8px 8px', maxWidth: '80%' }}>
+                            {message.content}
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 'bold', marginBottom: '4px', color: '#52c41a' }}>
+                            AI助手 {message.skillUsed && `(${message.skillUsed})`}
+                          </div>
+                          <div style={{ backgroundColor: '#fff', border: '1px solid #d9d9d9', padding: '8px 12px', borderRadius: '8px 0 8px 8px', maxWidth: '80%' }}>
+                            <div style={{ whiteSpace: 'pre-wrap', fontSize: '13px', lineHeight: '1.6' }}>
+                              {message.content}
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {aiLoading && (
+                <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                  <div style={{ backgroundColor: '#fff', border: '1px solid #d9d9d9', padding: '8px 12px', borderRadius: '8px 0 8px 8px' }}>
+                    <Text type="secondary">思考中...</Text>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
+        </div>
+
+        {/* 历史记录区域 */}
+        {analysisHistory.length > 0 && (
+          <div style={{ marginBottom: '16px' }}>
+            <Title level={5} style={{ marginBottom: '12px' }}>
+              <span style={{ fontSize: '14px', color: '#666' }}>分析历史</span>
+            </Title>
+            <div style={{ 
+              border: '1px solid #f0f0f0', 
+              borderRadius: '8px',
+              maxHeight: '200px',
+              overflowY: 'auto'
+            }}>
+              {analysisHistory.map((item) => (
+                <div 
+                  key={item.id} 
+                  style={{ 
+                    padding: '10px 12px', 
+                    borderBottom: '1px solid #f0f0f0',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '13px', color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {item.prompt}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>
+                      {item.stockCodes.length} 只股票 · {item.timestamp.toLocaleString('zh-CN')}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', marginLeft: '12px' }}>
+                    <Button 
+                      size="small" 
+                      onClick={() => applyHistoryAnalysis(item.stockCodes, item.prompt)}
+                      type="primary"
+                      ghost
+                    >
+                      应用
+                    </Button>
+                    <Button 
+                      size="small" 
+                      onClick={() => deleteHistoryItem(item.id)}
+                      danger
+                      ghost
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 输入区域 */}
+        <div>
+          <Input.TextArea
+            placeholder="请输入分析内容"
+            value={aiInput}
+            onChange={(e) => setAiInput(e.target.value)}
+            rows={3}
+            style={{ marginBottom: '12px' }}
+            onPressEnter={(e) => {
+              if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                analyzeOpportunityStocks();
+              }
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              提示：Ctrl+Enter 发送
+            </Text>
+            <Space>
+              <Button onClick={applyAiAnalysis} disabled={aiStockCodes.length === 0}>
+                应用到查询
+              </Button>
+              <Button
+                type="primary"
+                onClick={analyzeOpportunityStocks}
+                loading={aiLoading}
+                icon={<SendOutlined />}
+              >
+                发送
+              </Button>
+            </Space>
+          </div>
         </div>
       </Drawer>
     </div>

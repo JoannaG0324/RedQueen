@@ -14,12 +14,32 @@ class DataReader:
         self.db = db
     
     def get_stock_list(self) -> List[Dict[str, str]]:
-        """获取股票列表"""
-        stocks = self.db.query(StockInfo.stock_code, StockInfo.stock_name).all()
-        return [{
-            "stock_code": stock.stock_code,
-            "stock_name": stock.stock_name
-        } for stock in stocks]
+        """获取股票列表（优先从stock_daily_qfq获取最新名称）"""
+        from sqlalchemy import text
+        
+        # 从stock_daily_qfq表获取最新的股票名称
+        query = """
+            SELECT stock_code, stock_name 
+            FROM stock_daily_qfq 
+            WHERE stock_name IS NOT NULL AND stock_name != ''
+            GROUP BY stock_code, stock_name
+            ORDER BY MAX(date) DESC
+        """
+        result = self.db.execute(text(query))
+        rows = result.fetchall()
+        
+        if rows:
+            return [{
+                "stock_code": row.stock_code,
+                "stock_name": row.stock_name
+            } for row in rows]
+        else:
+            # 如果stock_daily_qfq表没有数据，从StockInfo表获取
+            stocks = self.db.query(StockInfo.stock_code, StockInfo.stock_name).all()
+            return [{
+                "stock_code": stock.stock_code,
+                "stock_name": stock.stock_name
+            } for stock in stocks]
     
     def get_stock_data_by_date(self, stock_code: str, target_date: date, days: int = 60) -> Optional[Dict[str, Any]]:
         """获取指定股票在指定日期的历史数据"""
@@ -196,7 +216,8 @@ class DataReader:
                 f.down_count, 
                 f.change_percent, 
                 i.close as close_price, 
-                c.ma3, c.ma5, c.ma10, c.ma20, c.ma60 
+                c.ma3, c.ma5, c.ma10, c.ma20, c.ma60,
+                c.growth_streak_days, c.growth_streak_pct
             FROM industry_flow_ODS f 
             JOIN industry_ths m ON f.industry_name = m.industry_name 
             LEFT JOIN industry_ths_index i ON m.industry_code = i.industry_code AND i.date = f.date 
@@ -232,7 +253,9 @@ class DataReader:
                     "dev_3": round(dev_3, 2),
                     "dev_5": round(dev_5, 2),
                     "dev_20": round(dev_20, 2),
-                    "dev_60": round(dev_60, 2)
+                    "dev_60": round(dev_60, 2),
+                    "growth_streak_days": float(row.growth_streak_days) if row.growth_streak_days else None,
+                    "growth_streak_pct": float(row.growth_streak_pct) if row.growth_streak_pct else None
                 })
             
             return industry_data

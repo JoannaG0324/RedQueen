@@ -812,7 +812,9 @@ def process_daily_industry_indicators(industry_code, target_date):
                         'atr3': None,
                         'atr5': None,
                         'atr10': None,
-                        'atr14': None
+                        'atr14': None,
+                        'growth_streak_days': None,
+                        'growth_streak_pct': None
                     }
                     calc_data.append(row_data)
             
@@ -835,6 +837,9 @@ def process_daily_industry_indicators(industry_code, target_date):
         # 计算ATR
         atr_results = calculate_atr(df_stock)
         
+        # 计算连涨天数和连涨幅度
+        growth_streak_results = calculate_growth_streak(df_stock)
+        
         # 准备插入数据（只插入目标日期的数据）
         calc_data = []
         for i in range(len(df_stock)):
@@ -852,6 +857,10 @@ def process_daily_industry_indicators(industry_code, target_date):
                 # 添加ATR数据
                 for atr_col, atr_values in atr_results.items():
                     row_data[atr_col] = atr_values[i]
+                
+                # 添加连涨天数和连涨幅度
+                row_data['growth_streak_days'] = growth_streak_results['growth_streak_days'][i]
+                row_data['growth_streak_pct'] = growth_streak_results['growth_streak_pct'][i]
                 
                 calc_data.append(row_data)
         

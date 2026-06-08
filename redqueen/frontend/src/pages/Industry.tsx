@@ -254,7 +254,10 @@ const Industry: React.FC = () => {
           }
         },
       legend: {
-        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量']
+        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
+        top: 5,
+        left: 80,
+        align: 'left'
       },
       dataZoom: [
         {
@@ -269,61 +272,69 @@ const Industry: React.FC = () => {
           start: startPercent,
           end: endPercent,
           height: 20,
-          bottom: 0,
+          bottom: -5,
           zoomLock: false
         }
       ],
       grid: [
         {
-          left: '3%',
-          right: '4%',
-          top: '3%',
-          height: '60%',
-          containLabel: true
+          left: 80,
+          right: 40,
+          top: 45,
+          bottom: '35%',
+          containLabel: false
         },
         {
-          left: '3%',
-          right: '4%',
-          top: '70%',
-          height: '20%',
-          containLabel: true
+          left: 80,
+          right: 40,
+          top: '65%',
+          bottom: 30,
+          containLabel: false
         }
       ],
       xAxis: [
         {
           type: 'category',
-          boundaryGap: false,
+          boundaryGap: true,
           data: data.map(item => item.date),
-          axisLabel: {
-            formatter: function(value: any) {
-              return value;
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          axisPointer: {
-            type: 'shadow'
-          },
-          axisLine: {
-            show: true
-          },
           axisTick: {
-            show: true
+            show: false
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: false
           }
         },
         {
           type: 'category',
-          boundaryGap: false,
+          boundaryGap: true,
           data: data.map(item => item.date),
           gridIndex: 1,
-          axisLabel: {
-            formatter: function(value: any) {
-              return value;
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          axisLine: {
-            show: true
-          },
           axisTick: {
-            show: true
+            alignWithLabel: true
+          },
+          axisLabel: {
+            show: true,
+            color: '#333',
+            fontSize: 11,
+            align: 'center'
+          },
+          splitLine: {
+            show: false
           }
         }
       ],
@@ -331,16 +342,28 @@ const Industry: React.FC = () => {
         {
           type: 'value',
           scale: true,
-          splitNumber: 5,
-          axisLabel: {
-            formatter: function(value: any) {
-              return Math.round(value);
+          splitNumber: 4,
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
             }
           },
-          splitArea: {
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            color: '#333',
+            fontSize: 13,
+            formatter: function(value: any) {
+              return value.toFixed(2);
+            }
+          },
+          splitLine: {
             show: true,
-            areaStyle: {
-              color: ['rgba(240, 240, 240, 0.2)', 'rgba(255, 255, 255, 0.2)']
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
             }
           }
         },
@@ -349,9 +372,27 @@ const Industry: React.FC = () => {
           scale: true,
           gridIndex: 1,
           splitNumber: 2,
-          show: false
+          axisLine: {
+            show: false
+          },
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
+            }
+          }
         }
       ],
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }]
+      },
       series: [
         {
           name: 'K 线',
@@ -627,6 +668,40 @@ const Industry: React.FC = () => {
       render: (text: number) => (
         <span style={{ color: (typeof text === 'number' && text >= 0) ? '#ef232a' : '#14b143' }}>
           {typeof text === 'number' ? text.toFixed(2) : '0.00'}
+        </span>
+      )
+    },
+    {
+      title: 'U-days',
+      dataIndex: 'growth_streak_days',
+      key: 'growth_streak_days',
+      width: 80,
+      align: 'right',
+      sorter: (a, b) => (a.growth_streak_days || 0) - (b.growth_streak_days || 0),
+      sortOrder: sortConfig && sortConfig.key === 'growth_streak_days' ? sortConfig.direction : false,
+      onHeaderCell: (column) => ({
+        onClick: () => handleSort('growth_streak_days')
+      }),
+      render: (text: number) => (
+        <span>
+          {typeof text === 'number' ? text.toFixed(1) : '-'}
+        </span>
+      )
+    },
+    {
+      title: 'U-pct',
+      dataIndex: 'growth_streak_pct',
+      key: 'growth_streak_pct',
+      width: 100,
+      align: 'right',
+      sorter: (a, b) => (a.growth_streak_pct || 0) - (b.growth_streak_pct || 0),
+      sortOrder: sortConfig && sortConfig.key === 'growth_streak_pct' ? sortConfig.direction : false,
+      onHeaderCell: (column) => ({
+        onClick: () => handleSort('growth_streak_pct')
+      }),
+      render: (text: number) => (
+        <span style={{ color: (typeof text === 'number' && text >= 0) ? '#ef232a' : '#14b143' }}>
+          {typeof text === 'number' ? text.toFixed(2) : '-'}
         </span>
       )
     }

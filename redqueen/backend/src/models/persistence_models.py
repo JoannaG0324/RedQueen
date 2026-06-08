@@ -32,18 +32,6 @@ class AnomalyStock(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-class IndustryRisk(Base):
-    """行业风险表"""
-    __tablename__ = "rq_industry_risks"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    industry = Column(String(50), nullable=False, index=True)
-    analyze_date = Column(Date, nullable=False, index=True)
-    risk_analysis = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
 class ScanTask(Base):
     """扫描任务表"""
     __tablename__ = "rq_scan_tasks"
@@ -108,35 +96,6 @@ class PersistenceManager:
             AnomalyStock.target_date >= start_date,
             AnomalyStock.target_date <= end_date
         ).all()
-    
-    def save_industry_risk(self, risk_data: Dict[str, Any]) -> IndustryRisk:
-        """保存行业风险数据"""
-        # 检查是否已存在相同行业和日期的风险数据
-        existing = self.db.query(IndustryRisk).filter(
-            IndustryRisk.industry == risk_data.get("industry"),
-            IndustryRisk.analyze_date == risk_data.get("analyze_date")
-        ).first()
-        
-        if existing:
-            # 更新现有数据
-            existing.risk_analysis = risk_data.get("risk_analysis")
-            self.db.commit()
-            self.db.refresh(existing)
-            return existing
-        else:
-            # 创建新数据
-            risk = IndustryRisk(**risk_data)
-            self.db.add(risk)
-            self.db.commit()
-            self.db.refresh(risk)
-            return risk
-    
-    def get_industry_risk(self, industry: str, analyze_date: Date) -> Optional[IndustryRisk]:
-        """获取行业风险数据"""
-        return self.db.query(IndustryRisk).filter(
-            IndustryRisk.industry == industry,
-            IndustryRisk.analyze_date == analyze_date
-        ).first()
     
     def save_scan_task(self, task_data: Dict[str, Any]) -> ScanTask:
         """保存扫描任务"""

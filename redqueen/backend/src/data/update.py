@@ -347,7 +347,7 @@ def update_stock_spot_data():
         stock_daily_qfq_df['outstanding_share'] = stock_daily_qfq_df['circulating_market_value']
         
         # 只保留stock_daily_qfq表需要的字段
-        stock_daily_qfq_columns = ['stock_code', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'change_rate', 'change_amount', 'turnover']
+        stock_daily_qfq_columns = ['stock_code', 'stock_name', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'change_rate', 'change_amount', 'turnover']
         stock_daily_qfq_df = stock_daily_qfq_df[stock_daily_qfq_columns]
         
         # 过滤停牌股票数据（close > 0）

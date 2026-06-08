@@ -21,6 +21,21 @@ from src.data.data_reader import DataReader
 from src.engine.rule_engine import RuleEngine
 from src.engine.ai_engine import AIEngine
 
+# 导入Skill系统
+from src.skills import SkillRegistry, OpportunityAnalysisSkill
+
+# 确保Skill被注册（显式初始化）
+def initialize_skills():
+    if not SkillRegistry.has_skill("opportunity_analysis"):
+        from src.skills.opportunity_analysis import OpportunityAnalysisSkill
+        SkillRegistry.register(OpportunityAnalysisSkill)
+        print("Skill注册完成: opportunity_analysis")
+    else:
+        print("Skill已注册: opportunity_analysis")
+
+# 初始化Skill
+initialize_skills()
+
 # 初始化规则表
 from sqlalchemy.orm import Session
 from src.utils.database import SessionLocal
@@ -271,34 +286,13 @@ async def get_anomaly_stocks(target_date: date, db: Session = Depends(get_db)):
 
 
 @app.get("/api/anomaly/stock/{stock_code}", response_model=Dict[str, Any])
-async def get_anomaly_stock(stock_code: str, target_date: date, get_risk: str = "false", db: Session = Depends(get_db)):
-    # 将字符串转换为布尔值
-    get_risk_bool = get_risk.lower() == "true"
+async def get_anomaly_stock(stock_code: str, target_date: date, db: Session = Depends(get_db)):
     """获取异动个股详情"""
     persistence_manager = PersistenceManager(db)
     stock = persistence_manager.get_anomaly_stock_by_code_and_date(stock_code, target_date)
     
     if not stock:
         raise HTTPException(status_code=404, detail="股票不存在")
-    
-    # 获取行业风险 - 只有当 get_risk 为 True 时才调用AI
-    industry_risk = None
-    if get_risk_bool:
-        # 检查是否已有行业风险数据（使用股票代码作为标识）
-        industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
-        if not industry_risk:
-            # 直接调用AI获取行业风险，AI会自动进行个股-行业映射
-            risk_data = ai_engine.get_industry_risk(f"{stock_code} {stock.stock_name}", target_date.isoformat())
-            if risk_data:
-                persistence_manager.save_industry_risk({
-                    "industry": stock_code,  # 使用股票代码作为industry字段
-                    "analyze_date": target_date,
-                    "risk_analysis": risk_data["risk_analysis"]
-                })
-                industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
-    else:
-        # 不获取行业风险，只检查是否已有数据
-        industry_risk = persistence_manager.get_industry_risk(stock_code, target_date)
     
     return {
         "id": stock.id,
@@ -309,7 +303,6 @@ async def get_anomaly_stock(stock_code: str, target_date: date, get_risk: str = 
         "triggered_rules": stock.triggered_rules,
         "industry": stock.industry,
         "industry_code": stock.industry_code,
-        "industry_risk": industry_risk.risk_analysis if industry_risk else None,
         "created_at": stock.created_at
     }
 
@@ -385,14 +378,33 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
     
     condition_str = " AND ".join(conditions)
     
-    # 构建 SQL 查询
+    # 计算前一日日期
+    target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    prev_date_obj = target_date_obj - timedelta(days=1)
+    prev_date_str = prev_date_obj.isoformat()
+    
+    # 构建 SQL 查询 - 包含前一日成交量和计算指标
     query = f"""
-        SELECT sdqc.date, sdqc.stock_code, its.stock_name, 
-               it.industry_name as industry,
-               sd.close, sd.change_rate,
-               sdqc.growth_streak_days, sdqc.growth_streak_pct
+        SELECT 
+            sdqc.date, sdqc.stock_code, COALESCE(sd.stock_name, its.stock_name) as stock_name, 
+            it.industry_name as industry,
+            sd.close, sd.change_rate, sd.turnover,
+            sdqc.growth_streak_days, sdqc.growth_streak_pct,
+            sd.volume,
+            COALESCE(sd_prev.volume, 0) as prev_volume,
+            CASE 
+                WHEN sd.turnover IS NOT NULL AND sd.turnover > 0 
+                THEN sd.amount / sd.turnover / 100 * 1.2 
+                ELSE NULL 
+            END as market_cap_r,
+            CASE 
+                WHEN sd_prev.volume IS NOT NULL AND sd_prev.volume > 0 
+                THEN (sd.volume / sd_prev.volume - 1) * 100 
+                ELSE NULL 
+            END as volume_pct
         FROM stock_daily_qfq_calc sdqc 
         LEFT JOIN stock_daily_qfq sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date 
+        LEFT JOIN stock_daily_qfq sd_prev ON sd_prev.stock_code = sdqc.stock_code AND sd_prev.date = '{prev_date_str}'
         LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code 
         LEFT JOIN industry_ths it ON it.industry_code = its.industry_code 
         WHERE {condition_str}
@@ -412,8 +424,12 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
             "industry": row[3],
             "close": row[4],
             "change_rate": row[5],
-            "growth_streak_days": row[6],
-            "growth_streak_pct": row[7]
+            "turnover": row[6],
+            "growth_streak_days": row[7],
+            "growth_streak_pct": row[8],
+            "volume": row[9],
+            "market_cap_r": row[11],
+            "volume_pct": row[12]
         })
     
     return stock_data_list
@@ -488,51 +504,43 @@ from pydantic import BaseModel
 
 class AnalyzeRequest(BaseModel):
     prompt: str
+    skill_name: str = "opportunity_analysis"
 
 
 @app.post("/api/ai/analyze", response_model=Dict[str, Any])
-async def analyze_opportunity_stocks(request: AnalyzeRequest, db: Session = Depends(get_db)):
-    """分析机会个股"""
+async def analyze_opportunity_stocks(request: AnalyzeRequest):
+    """分析机会个股 - 使用Skill架构（支持选择不同Skill）"""
     try:
-        # 导入prompt模板
-        from src.utils.prompts import OPPORTUNITY_ANALYSIS_PROMPT
+        # 获取指定的Skill实例（默认使用opportunity_analysis）
+        skill_name = request.skill_name
+        if not SkillRegistry.has_skill(skill_name):
+            raise HTTPException(status_code=404, detail=f"Skill不存在: {skill_name}")
         
-        # 使用模板构建prompt
-        prompt = OPPORTUNITY_ANALYSIS_PROMPT.format(user_input=request.prompt)
+        skill_class = SkillRegistry.get(skill_name)
+        skill_instance = skill_class()
         
-        # 调用AI引擎分析
-        result = ai_engine.call_doubao_api(prompt)
+        # 执行Skill
+        result = skill_instance.execute(user_prompt=request.prompt)
         
-        if not result:
-            raise HTTPException(status_code=500, detail="AI分析失败")
-        
-        # 提取分析结果
-        analysis = ""
-        if "choices" in result and isinstance(result["choices"], list):
-            for choice in result["choices"]:
-                if "message" in choice and "content" in choice["message"]:
-                    analysis = choice["message"]["content"]
-                    break
-        elif "output" in result and isinstance(result["output"], list):
-            for item in result["output"]:
-                if "content" in item:
-                    if isinstance(item["content"], list):
-                        for content_item in item["content"]:
-                            if "text" in content_item:
-                                analysis = content_item["text"]
-                                break
-                    elif isinstance(item["content"], str):
-                        analysis = item["content"]
-                    break
-        
-        if not analysis:
-            raise HTTPException(status_code=500, detail="无法提取分析结果")
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["error"])
         
         return {
-            "analysis": analysis
+            "analysis": result["analysis"],
+            "stock_list": result.get("stock_list", []),
+            "confidence": result.get("confidence", 0),
+            "metadata": result.get("metadata", {})
         }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+
+
+@app.get("/api/ai/skills", response_model=List[Dict[str, Any]])
+async def list_skills():
+    """获取所有已注册的Skill列表"""
+    return SkillRegistry.list_skills()
 
 
 @app.get("/api/industry/list", response_model=List[Dict[str, Any]])

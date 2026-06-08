@@ -14,18 +14,6 @@ CREATE TABLE IF NOT EXISTS anomaly_stocks (
     INDEX idx_scan_date (scan_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 创建行业风险表
-CREATE TABLE IF NOT EXISTS industry_risks (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    industry VARCHAR(50) NOT NULL,
-    analyze_date DATE NOT NULL,
-    risk_analysis TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_industry (industry),
-    INDEX idx_analyze_date (analyze_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 -- 创建扫描任务表
 CREATE TABLE IF NOT EXISTS scan_tasks (
     id INT PRIMARY KEY AUTO_INCREMENT,

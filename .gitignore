@@ -13,6 +13,9 @@ __pycache__/
 # 忽略数据库文件
 *.db
 
+# 忽略敏感配置文件（Cookie等）
+redqueen/backend/src/data/config/cookies.py
+
 
 # 忽略前端依赖
 node_modules/
