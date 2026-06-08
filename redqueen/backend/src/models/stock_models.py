@@ -85,9 +85,11 @@ class IndustryThs(Base):
     """同花顺行业分类表"""
     __tablename__ = "industry_ths"
     
-    industry_code = Column(Text, primary_key=True)
+    id = Column(Integer, primary_key=True, index=True)
+    industry_code = Column(Text, unique=True, index=True)
     industry_name = Column(Text)
     edit_date = Column(Date)
+    flag = Column(Integer, default=1)
 
 
 class IndustryThsStock(Base):

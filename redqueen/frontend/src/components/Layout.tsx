@@ -23,9 +23,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             mode="horizontal"
             selectedKeys={[location.pathname]}
             items={[
-              { key: '/', label: <Link to="/">Anomaly List of Stocks</Link> },
-              { key: '/stock-list', label: <Link to="/stock-list">Stock List</Link> },
+              { key: '/heatmap', label: <Link to="/heatmap">Heatmap</Link> },              
               { key: '/industry', label: <Link to="/industry">Industry</Link> },
+              { key: '/stock-list', label: <Link to="/stock-list">Stock</Link> },
+              { key: '/', label: <Link to="/">Anomaly</Link> },
               { key: '/data', label: <Link to="/data">Data</Link> },
             ]}
           />

@@ -115,3 +115,11 @@ export const getSkills = async () => {
   const response = await api.get('/ai/skills');
   return response.data;
 };
+
+// 获取热力图数据
+export const getHeatmapData = async (date1: string, date2: string) => {
+  const response = await api.get('/heatmap/data', {
+    params: { date1, date2 }
+  });
+  return response.data;
+};

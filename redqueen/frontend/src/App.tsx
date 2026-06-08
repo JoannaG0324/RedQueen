@@ -5,6 +5,7 @@ import AnomalyList from './pages/AnomalyList';
 import StockList from './pages/StockList';
 import Industry from './pages/Industry';
 import Data from './pages/Data';
+import Heatmap from './pages/Heatmap';
 
 const App: React.FC = () => {
   return (
@@ -14,6 +15,7 @@ const App: React.FC = () => {
           <Route path="/" element={<AnomalyList />} />
           <Route path="/stock-list" element={<StockList />} />
           <Route path="/industry" element={<Industry />} />
+          <Route path="/heatmap" element={<Heatmap />} />
           <Route path="/data" element={<Data />} />
         </Routes>
       </Layout>

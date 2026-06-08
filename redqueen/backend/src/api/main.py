@@ -591,6 +591,86 @@ async def get_industry_kline(industry_code: str, days: int = 20, end_date: str =
         raise HTTPException(status_code=500, detail=f"获取行业K线数据失败: {str(e)}")
 
 
+@app.get("/api/heatmap/data", response_model=List[Dict[str, Any]])
+async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)):
+    """获取行业个股热力图数据"""
+    try:
+        # 解析日期参数
+        date1_obj = datetime.strptime(date1, "%Y-%m-%d").date()
+        date2_obj = datetime.strptime(date2, "%Y-%m-%d").date()
+        
+        # 验证日期顺序
+        if date1_obj >= date2_obj:
+            raise HTTPException(status_code=400, detail="起始日期必须早于结束日期")
+        
+        # 构建SQL查询
+        query = """
+            SELECT 
+                it.industry_code,
+                it.industry_name,
+                its.stock_code,
+                COALESCE(its.stock_name, s.stock_name) as stock_name,
+                # 计算自定义市值 Market(R) = amount / turnover / 100 * 1.2
+                CASE 
+                    WHEN s2.turnover IS NOT NULL AND s2.turnover > 0 
+                    THEN s2.amount / s2.turnover / 100 * 1.2 
+                    ELSE NULL 
+                END as market_cap_r,
+                # 计算个股区间涨跌幅
+                CASE 
+                    WHEN s1.close IS NOT NULL AND s1.close > 0 AND s2.close IS NOT NULL 
+                    THEN (s2.close / s1.close) - 1 
+                    ELSE NULL 
+                END as change_pct,
+                # 计算行业区间涨跌幅（基于行业指数）
+                CASE 
+                    WHEN i1.close IS NOT NULL AND i1.close > 0 AND i2.close IS NOT NULL 
+                    THEN (i2.close / i1.close) - 1 
+                    ELSE NULL 
+                END as industry_change_pct
+            FROM industry_ths it
+            JOIN industry_ths_stock its ON it.industry_code = its.industry_code
+            LEFT JOIN stock_daily_qfq s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
+            LEFT JOIN stock_daily_qfq s2 ON its.stock_code = s2.stock_code AND s2.date = :date2
+            LEFT JOIN (
+                SELECT stock_code, stock_name 
+                FROM stock_daily_qfq 
+                WHERE date = :date2 
+                AND stock_name IS NOT NULL 
+                AND stock_name != ''
+            ) s ON its.stock_code = s.stock_code
+            LEFT JOIN industry_ths_index i1 ON it.industry_code = i1.industry_code AND i1.date = :date1
+            LEFT JOIN industry_ths_index i2 ON it.industry_code = i2.industry_code AND i2.date = :date2
+            WHERE it.flag = 1
+            # 过滤异常数据
+            AND (s2.turnover IS NULL OR s2.turnover > 0)
+            AND s1.close IS NOT NULL 
+            AND s2.close IS NOT NULL
+            ORDER BY it.industry_code, its.stock_code
+        """
+        
+        # 执行查询
+        result = db.execute(text(query), {"date1": date1_obj, "date2": date2_obj})
+        rows = result.fetchall()
+        
+        # 构建返回数据
+        heatmap_data = []
+        for row in rows:
+            heatmap_data.append({
+                "industry_code": row[0],
+                "industry_name": row[1],
+                "stock_code": row[2],
+                "stock_name": row[3],
+                "market_cap_r": float(row[4]) if row[4] else None,
+                "change_pct": float(row[5]) if row[5] else None,
+                "industry_change_pct": float(row[6]) if row[6] else None
+            })
+        
+        return heatmap_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取热力图数据失败: {str(e)}")
+
+
 # 全局变量，用于跟踪正在执行的任务
 running_tasks = {}
 
