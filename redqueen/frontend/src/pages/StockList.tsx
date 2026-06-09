@@ -945,7 +945,7 @@ const StockList: React.FC = () => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
           <Text>
-            {value.toFixed(2)}
+            {(value / 100000000).toFixed(2)}
           </Text>
         );
       },

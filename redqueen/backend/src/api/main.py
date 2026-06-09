@@ -394,7 +394,7 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
             COALESCE(sd_prev.volume, 0) as prev_volume,
             CASE 
                 WHEN sd.turnover IS NOT NULL AND sd.turnover > 0 
-                THEN sd.amount / sd.turnover / 100 * 1.2 
+                THEN sd.amount / (sd.turnover / 100) * 1.2 
                 ELSE NULL 
             END as market_cap_r,
             CASE 
@@ -610,10 +610,10 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 it.industry_name,
                 its.stock_code,
                 COALESCE(its.stock_name, s.stock_name) as stock_name,
-                # 计算自定义市值 Market(R) = amount / turnover / 100 * 1.2
+                # 计算自定义市值 Market(R) = amount / (turnover / 100) * 1.2
                 CASE 
                     WHEN s2.turnover IS NOT NULL AND s2.turnover > 0 
-                    THEN s2.amount / s2.turnover / 100 * 1.2 
+                    THEN s2.amount / (s2.turnover / 100) * 1.2 
                     ELSE NULL 
                 END as market_cap_r,
                 # 计算个股区间涨跌幅
