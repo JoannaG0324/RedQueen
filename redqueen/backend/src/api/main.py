@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, text
@@ -13,7 +13,7 @@ from src.utils.database import get_db, Base, engine
 # 导入所有模型类，确保创建数据库表时包含所有表结构
 from src.models.persistence_models import PersistenceManager, TaskStatus
 from src.models.rule_models import RuleManager, TriggeredRule
-from src.models.stock_models import StockDailyQfq, StockDailyAnalysis, IndustryThs, IndustryThsStock, StockDailyQfqCalc
+from src.models.stock_models import StockDailyQfq, StockDailyAnalysis, IndustryThs, IndustryThsStock, StockDailyQfqCalc, StockFavorite
 
 # 创建所有表（如果不存在）
 Base.metadata.create_all(bind=engine)
@@ -360,60 +360,67 @@ async def get_latest_trading_day(db: Session = Depends(get_db)):
 
 
 @app.get("/api/stock/list", response_model=List[Dict[str, Any]])
-async def get_stock_list(target_date: str, industry: str = "", stock_codes: str = "", db: Session = Depends(get_db)):
-    """获取股票列表"""
+async def get_stock_list(target_date: str = None, industry: str = "", stock_codes: str = "", db: Session = Depends(get_db)):
+    """获取股票列表 - 若未指定 target_date，则默认使用数据库中最新的交易日"""
+    # 未指定日期时，使用数据库中最新交易日
+    if not target_date:
+        latest_date = db.query(func.max(StockDailyQfqCalc.date)).scalar()
+        if not latest_date:
+            return []
+        target_date = latest_date.isoformat()
+
     # 构建查询条件
     conditions = []
     conditions.append(f"sdqc.date = '{target_date}'")
-    
+
     if industry:
         conditions.append(f"it.industry_name = '{industry}'")
-    
+
     if stock_codes:
         # 解析股票代码列表
         stock_code_list = stock_codes.split(",")
         # 构建IN条件
         stock_code_str = ",".join([f"'{code}'" for code in stock_code_list])
         conditions.append(f"sdqc.stock_code IN ({stock_code_str})")
-    
+
     condition_str = " AND ".join(conditions)
-    
+
     # 计算前一日日期
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
     prev_date_obj = target_date_obj - timedelta(days=1)
     prev_date_str = prev_date_obj.isoformat()
-    
+
     # 构建 SQL 查询 - 包含前一日成交量和计算指标
     query = f"""
-        SELECT 
-            sdqc.date, sdqc.stock_code, COALESCE(sd.stock_name, its.stock_name) as stock_name, 
+        SELECT
+            sdqc.date, sdqc.stock_code, COALESCE(sd.stock_name, its.stock_name) as stock_name,
             it.industry_name as industry,
             sd.close, sd.change_rate, sd.turnover,
             sdqc.growth_streak_days, sdqc.growth_streak_pct,
             sd.volume,
             COALESCE(sd_prev.volume, 0) as prev_volume,
-            CASE 
-                WHEN sd.turnover IS NOT NULL AND sd.turnover > 0 
-                THEN sd.amount / (sd.turnover / 100) * 1.2 
-                ELSE NULL 
+            CASE
+                WHEN sd.turnover IS NOT NULL AND sd.turnover > 0
+                THEN sd.amount / (sd.turnover / 100) * 1.2
+                ELSE NULL
             END as market_cap_r,
-            CASE 
-                WHEN sd_prev.volume IS NOT NULL AND sd_prev.volume > 0 
-                THEN (sd.volume / sd_prev.volume - 1) * 100 
-                ELSE NULL 
+            CASE
+                WHEN sd_prev.volume IS NOT NULL AND sd_prev.volume > 0
+                THEN (sd.volume / sd_prev.volume - 1) * 100
+                ELSE NULL
             END as volume_pct
-        FROM stock_daily_qfq_calc sdqc 
-        LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date 
+        FROM stock_daily_qfq_calc sdqc
+        LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date
         LEFT JOIN stock_daily_analysis sd_prev ON sd_prev.stock_code = sdqc.stock_code AND sd_prev.date = '{prev_date_str}'
-        LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code 
-        LEFT JOIN industry_ths it ON it.industry_code = its.industry_code 
+        LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code
+        LEFT JOIN industry_ths it ON it.industry_code = its.industry_code
         WHERE {condition_str}
     """
-    
+
     # 执行查询
     result = db.execute(text(query))
     rows = result.fetchall()
-    
+
     # 构建返回数据
     stock_data_list = []
     for row in rows:
@@ -431,7 +438,7 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
             "market_cap_r": row[11],
             "volume_pct": row[12]
         })
-    
+
     return stock_data_list
 
 
@@ -439,33 +446,38 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
 async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None, db: Session = Depends(get_db)):
     """获取股票 K 线数据"""
     data_reader = DataReader(db)
-    
+
+    # 预先计算"最新交易日"，用于两次查询的公共回退
+    latest_trading_day = db.query(func.max(StockDailyAnalysis.date)).scalar()
+
     # 确定目标日期
     if end_date:
-        # 如果提供了结束日期，使用该日期
+        # 如果提供了结束日期，使用该日期；若查询结果为空再回退到最新交易日
         target_date = datetime.fromisoformat(end_date).date()
     else:
-        # 否则使用最新的交易日
-        latest_trading_day = db.query(func.max(StockDailyAnalysis.date)).scalar()
         if not latest_trading_day:
             return []
         target_date = latest_trading_day
-    
+
     # 使用合理的默认值，避免数据校验失败
     # 当days超过365时，使用365作为数据校验的标准
     validate_days = min(days, 365)
-    
+
     # 获取股票数据
     stock_data = data_reader.get_stock_data_by_date(stock_code, target_date, validate_days)
-    
+
+    # 兜底：当 end_date 与实际数据不一致时，回退到最新交易日再查一次
+    if (not stock_data) and end_date and latest_trading_day and target_date != latest_trading_day:
+        stock_data = data_reader.get_stock_data_by_date(stock_code, latest_trading_day, validate_days)
+
     if not stock_data:
         return []
-    
+
     # 构建 K 线数据
     kline_data = []
     for i, date_str in enumerate(stock_data["dates"]):
         current_date = datetime.fromisoformat(date_str).date()
-        
+
         # 获取技术指标数据
         tech_data = data_reader.db.query(StockDailyQfqCalc).filter(
             and_(
@@ -473,13 +485,13 @@ async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None,
                 StockDailyQfqCalc.date == current_date
             )
         ).first()
-        
+
         ma5 = tech_data.ma5 if tech_data else None
         ma10 = tech_data.ma10 if tech_data else None
         ma20 = tech_data.ma20 if tech_data else None
         ma60 = tech_data.ma60 if tech_data else None
         ma120 = tech_data.ma120 if tech_data else None
-        
+
         kline_data.append({
             "date": date_str,
             "open": stock_data["open"][i] if i < len(stock_data["open"]) else None,
@@ -495,7 +507,7 @@ async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None,
             "ma60": ma60,
             "ma120": ma120
         })
-    
+
     return kline_data
 
 
@@ -1096,3 +1108,124 @@ async def stop_tasks():
     except Exception as e:
         print(f"终止任务失败: {e}")
         raise HTTPException(status_code=500, detail=f"终止任务失败: {str(e)}")
+
+
+# ========== 股票收藏接口 ==========
+
+
+@app.get("/api/stock/favorites", response_model=List[Dict[str, Any]])
+async def get_favorite_list(db: Session = Depends(get_db)):
+    """获取所有收藏的股票代码列表（状态为 1 即"已收藏"）"""
+    try:
+        rows = db.query(StockFavorite).filter(StockFavorite.status == 1).all()
+        return [
+            {
+                "stock_code": r.stock_code,
+                "price_date": r.price_date.isoformat() if r.price_date else None,
+                "status": r.status,
+                "updated_time": r.updated_time.isoformat() if r.updated_time else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询收藏列表失败: {str(e)}")
+
+
+@app.get("/api/stock/favorite/{stock_code}", response_model=Dict[str, Any])
+async def get_favorite_one(stock_code: str, db: Session = Depends(get_db)):
+    """查询某只股票的收藏状态"""
+    try:
+        row = db.query(StockFavorite).filter(StockFavorite.stock_code == stock_code).first()
+        if not row:
+            return {"stock_code": stock_code, "status": 0, "price_date": None, "updated_time": None}
+        return {
+            "stock_code": row.stock_code,
+            "price_date": row.price_date.isoformat() if row.price_date else None,
+            "status": row.status,
+            "updated_time": row.updated_time.isoformat() if row.updated_time else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询收藏状态失败: {str(e)}")
+
+
+@app.post("/api/stock/favorite/{stock_code}", response_model=Dict[str, Any])
+async def upsert_favorite(
+    stock_code: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    """收藏/取消收藏某只股票
+
+    首次收藏时插入新记录；对同一只股票的后续操作按主键更新：
+    - status=1 收藏时更新 price_date 与 updated_time
+    - status=0 取消收藏时仅更新 status 和 updated_time，不覆盖 price_date
+    """
+    from datetime import datetime as _dt
+    try:
+        price_date_raw = payload.get("price_date")
+        status = payload.get("status")
+        if status is None or status not in (0, 1):
+            raise HTTPException(status_code=400, detail="参数 status 必须为 0 或 1")
+        price_date = None
+        if price_date_raw:
+            try:
+                price_date = _dt.strptime(str(price_date_raw), "%Y-%m-%d").date()
+            except Exception:
+                raise HTTPException(status_code=400, detail="price_date 格式错误，应为 YYYY-MM-DD")
+
+        now = _dt.now()
+        row = db.query(StockFavorite).filter(StockFavorite.stock_code == stock_code).first()
+        if row is None:
+            if not price_date:
+                price_date = now.date()
+            new_row = StockFavorite(
+                stock_code=stock_code,
+                price_date=price_date,
+                status=status,
+                updated_time=now,
+            )
+            db.add(new_row)
+            db.commit()
+            db.refresh(new_row)
+            return {
+                "stock_code": new_row.stock_code,
+                "price_date": new_row.price_date.isoformat() if new_row.price_date else None,
+                "status": new_row.status,
+                "updated_time": new_row.updated_time.isoformat() if new_row.updated_time else None,
+                "action": "insert",
+            }
+        else:
+            row.status = status
+            row.updated_time = now
+            if status == 1 and price_date is not None:
+                row.price_date = price_date
+            db.commit()
+            db.refresh(row)
+            return {
+                "stock_code": row.stock_code,
+                "price_date": row.price_date.isoformat() if row.price_date else None,
+                "status": row.status,
+                "updated_time": row.updated_time.isoformat() if row.updated_time else None,
+                "action": "update",
+            }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新收藏失败: {str(e)}")
+
+
+@app.delete("/api/stock/favorite/{stock_code}", response_model=Dict[str, Any])
+async def delete_favorite(stock_code: str, db: Session = Depends(get_db)):
+    """删除某只股票的收藏记录"""
+    try:
+        row = db.query(StockFavorite).filter(StockFavorite.stock_code == stock_code).first()
+        if not row:
+            return {"status": "success", "message": "记录不存在", "stock_code": stock_code}
+        db.delete(row)
+        db.commit()
+        return {"status": "success", "message": "已删除", "stock_code": stock_code}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"删除收藏失败: {str(e)}")

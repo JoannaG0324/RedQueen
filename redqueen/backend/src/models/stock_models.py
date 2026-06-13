@@ -121,3 +121,13 @@ class IndustryThsStock(Base):
     stock_name = Column(Text)
     industry_code = Column(Text, index=True)
     edit_date = Column(Date)
+
+
+class StockFavorite(Base):
+    """股票收藏表 - 用户关注的股票"""
+    __tablename__ = "stock_favorite"
+
+    stock_code = Column(String(20), primary_key=True, nullable=False, index=True)
+    price_date = Column(Date, nullable=False)
+    status = Column(Integer, nullable=False, default=1)
+    updated_time = Column(DateTime, nullable=False, server_default=func.now())

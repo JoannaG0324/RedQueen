@@ -76,7 +76,14 @@ export const healthCheck = async () => {
 
 // 获取股票列表
 export const getStockList = async (targetDate: string, industry: string = '', stockCodes: string[] = []) => {
-  const params: any = { target_date: targetDate, industry: industry };
+  const params: any = {};
+  // 只有显式传了日期才往后端传 target_date；为空时让后端 fallback 到数据库中的最新交易日
+  if (targetDate) {
+    params.target_date = targetDate;
+  }
+  if (industry) {
+    params.industry = industry;
+  }
   if (stockCodes && stockCodes.length > 0) {
     params.stock_codes = stockCodes.join(',');
   }
@@ -121,5 +128,37 @@ export const getHeatmapData = async (date1: string, date2: string) => {
   const response = await api.get('/heatmap/data', {
     params: { date1, date2 }
   });
+  return response.data;
+};
+
+// 股票收藏相关接口
+export interface FavoriteItem {
+  stock_code: string;
+  price_date: string | null;
+  status: number;
+  updated_time: string | null;
+}
+
+export const getFavoriteList = async (): Promise<FavoriteItem[]> => {
+  const response = await api.get('/stock/favorites');
+  return response.data;
+};
+
+export const getFavoriteOne = async (stockCode: string): Promise<FavoriteItem> => {
+  const response = await api.get(`/stock/favorite/${stockCode}`);
+  return response.data;
+};
+
+/** 更新收藏状态：status=1 收藏，status=0 取消收藏 */
+export const upsertFavorite = async (
+  stockCode: string,
+  payload: { price_date?: string; status: number }
+): Promise<FavoriteItem & { action?: string }> => {
+  const response = await api.post(`/stock/favorite/${stockCode}`, payload);
+  return response.data;
+};
+
+export const deleteFavorite = async (stockCode: string) => {
+  const response = await api.delete(`/stock/favorite/${stockCode}`);
   return response.data;
 };

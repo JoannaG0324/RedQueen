@@ -185,6 +185,31 @@ const Industry: React.FC = () => {
       item.date,
       item.ma60 !== null ? parseFloat(item.ma60 as any) : null
     ]);
+
+    const periods = [20, 60, 120];
+    const hlByPeriod: { [key: number]: { highs: any[]; lows: any[] } } = {};
+    for (const period of periods) {
+      const highs: any[] = [];
+      const lows: any[] = [];
+      for (let i = 0; i < data.length; i++) {
+        if (i < period - 1) {
+          highs.push([data[i].date, null]);
+          lows.push([data[i].date, null]);
+        } else {
+          let h = -Infinity;
+          let l = Infinity;
+          for (let j = i - period + 1; j <= i; j++) {
+            const hj = parseFloat(data[j].high as any);
+            const lj = parseFloat(data[j].low as any);
+            if (!isNaN(hj) && hj > h) h = hj;
+            if (!isNaN(lj) && lj < l) l = lj;
+          }
+          highs.push([data[i].date, h]);
+          lows.push([data[i].date, l]);
+        }
+      }
+      hlByPeriod[period] = { highs, lows };
+    }
     
     const option = {
       tooltip: {
@@ -239,6 +264,15 @@ const Industry: React.FC = () => {
             const changeRate = changeRateValue.toFixed(2);
             const changeRateColor = changeRateValue >= 0 ? '#ef232a' : '#11c26d';
             
+            const h20Val = hlByPeriod[20].highs[dataIndex]?.[1];
+            const h60Val = hlByPeriod[60].highs[dataIndex]?.[1];
+            const h120Val = hlByPeriod[120].highs[dataIndex]?.[1];
+            const l20Val = hlByPeriod[20].lows[dataIndex]?.[1];
+            const h20Str = (typeof h20Val === 'number' && isFinite(h20Val)) ? h20Val.toFixed(2) : '-';
+            const h60Str = (typeof h60Val === 'number' && isFinite(h60Val)) ? h60Val.toFixed(2) : '-';
+            const h120Str = (typeof h120Val === 'number' && isFinite(h120Val)) ? h120Val.toFixed(2) : '-';
+            const l20Str = (typeof l20Val === 'number' && isFinite(l20Val)) ? l20Val.toFixed(2) : '-';
+
             return `日期: ${name}<br/>
                    开盘: ${open.toFixed(2)}<br/>
                    收盘: ${close.toFixed(2)}<br/>
@@ -249,12 +283,16 @@ const Industry: React.FC = () => {
                    MA10: ${ma10}<br/>
                    MA20: ${ma20}<br/>
                    MA60: ${ma60}<br/>
+                   H20: <span style="color: #ef232a">${h20Str}</span><br/>
+                   H60: <span style="color: #ef232a">${h60Str}</span><br/>
+                   H120: <span style="color: #ef232a">${h120Str}</span><br/>
+                   L20: <span style="color: #11c26d">${l20Str}</span><br/>
                    成交量: ${volume}<br/>
                    成交额: ${amount}`;
           }
         },
       legend: {
-        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
+        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', 'H20', 'H60', 'H120', 'L20', '成交量'],
         top: 5,
         left: 80,
         align: 'left'
@@ -448,6 +486,54 @@ const Industry: React.FC = () => {
             color: '#faad14' // 黄色
           },
           symbol: 'none'
+        },
+        {
+          name: 'H20',
+          type: 'line',
+          data: hlByPeriod[20].highs,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: {
+            width: 1,
+            type: 'dashed',
+            color: '#ff4d4f'
+          }
+        },
+        {
+          name: 'H60',
+          type: 'line',
+          data: hlByPeriod[60].highs,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: {
+            width: 1,
+            type: 'dashed',
+            color: '#ef232a'
+          }
+        },
+        {
+          name: 'H120',
+          type: 'line',
+          data: hlByPeriod[120].highs,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: {
+            width: 1,
+            type: 'dashed',
+            color: '#9d0208'
+          }
+        },
+        {
+          name: 'L20',
+          type: 'line',
+          data: hlByPeriod[20].lows,
+          smooth: false,
+          symbol: 'none',
+          lineStyle: {
+            width: 1,
+            type: 'dashed',
+            color: '#b7ebc7'
+          }
         },
         {
           name: '成交量',

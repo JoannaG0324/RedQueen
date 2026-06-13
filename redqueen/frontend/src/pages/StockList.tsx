@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, Table, message, Space, Typography, Select, Input, Card, Tooltip, Modal, Radio, Drawer, Switch } from 'antd';
+import { Button, Table, message, Space, Typography, Select, Input, Card, Radio, Drawer, Switch, Spin } from 'antd';
 import type { ColumnType } from 'antd/es/table';
-import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined } from '@ant-design/icons';
+import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills } from '../api/api';
+import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite } from '../api/api';
 
 const MARKET_OPTIONS = [
   { value: 'SH_60', label: 'SH_60', prefixes: ['60'] },
@@ -23,8 +23,6 @@ const matchMarket = (stockCode: string, selectedMarkets: string[]): boolean => {
   });
 };
 
-const { Title, Text } = Typography;
-
 interface StockData {
   date: string;
   stock_code: string;
@@ -35,9 +33,8 @@ interface StockData {
   growth_streak_pct: number;
   market_cap_r?: number;
   volume_pct?: number;
+  turnover?: number;
   industry?: string;
-  total_triggers?: number;
-  triggered_rules?: any[];
 }
 
 interface KLineData {
@@ -55,6 +52,69 @@ interface KLineData {
   ma60?: number;
   ma120?: number;
 }
+
+const SENTIMENT_OPTIONS = [
+  { value: '0', label: '0 ([0, 1))' },
+  { value: '1', label: '1 ([1, 2))' },
+  { value: '2', label: '2 ((2, 3))' },
+  { value: '3', label: '3 ([3, 4])' },
+  { value: '4', label: '4 ([4, 5))' },
+  { value: '5', label: '5 ([5, 6))' },
+  { value: '5+', label: '5+ ([6, ∞))' },
+];
+
+const matchSentiment = (days: any, sentiment: string): boolean => {
+  if (!sentiment) return true;
+  const d = typeof days === 'number' ? days : parseFloat(days) || 0;
+  switch (sentiment) {
+    case '0':
+      return d >= 0 && d < 1;
+    case '1':
+      return d >= 1 && d < 2;
+    case '2':
+      return d > 2 && d < 3;
+    case '3':
+      return d >= 3 && d < 4;
+    case '4':
+      return d >= 4 && d < 5;
+    case '5':
+      return d >= 5 && d < 6;
+    case '5+':
+      return d >= 6;
+    default:
+      return true;
+  }
+};
+
+const matchKeyword = (stock: StockData, keyword: string): boolean => {
+  if (!keyword) return true;
+  const kw = keyword.toLowerCase();
+  const name = (stock.stock_name || '').toLowerCase();
+  const code = (stock.stock_code || '').toLowerCase();
+  return name.includes(kw) || code.includes(kw);
+};
+
+interface FilterOptions {
+  industry?: string;
+  sentiment?: string;
+  keyword?: string;
+  markets?: string[];
+  favoriteOnly?: boolean;
+  favStockCodes?: Set<string>;
+}
+
+const applyFilters = (list: StockData[], opts: FilterOptions): StockData[] => {
+  return list.filter((stock) => {
+    if (opts.industry && stock.industry !== opts.industry) return false;
+    if (!matchSentiment(stock.growth_streak_days, opts.sentiment || '')) return false;
+    if (!matchKeyword(stock, opts.keyword || '')) return false;
+    if (!matchMarket(stock.stock_code, opts.markets || [])) return false;
+    if (opts.favoriteOnly && opts.favStockCodes && !opts.favStockCodes.has(stock.stock_code)) return false;
+    return true;
+  });
+};
+
+const { Title, Text } = Typography;
 
 interface ChatMessage {
   id: string;
@@ -79,11 +139,16 @@ interface AnalysisHistory {
 }
 
 const StockList: React.FC = () => {
+  // latestTradingDate / selectedDate 默认从后端拉取数据库中最新交易日，
+  // 避免用"今天"拉到空数据；用户在列表中点击的仍是后端里真实存在的日期。
+  const todayStr = new Date().toISOString().split('T')[0];
+
   const [loading, setLoading] = useState(false);
   const [kLineLoading, setKLineLoading] = useState(false);
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [latestTradingDate, setLatestTradingDate] = useState<string>(todayStr);
   const [selectedIndustry, setSelectedIndustry] = useState<string | undefined>(undefined);
   const [selectedMarkets, setSelectedMarkets] = useState<string[]>(MARKET_OPTIONS.map((o) => o.value));
   const [industries, setIndustries] = useState<string[]>([]);
@@ -91,126 +156,127 @@ const StockList: React.FC = () => {
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
   const [timeRange, setTimeRange] = useState<string>('90');
   const [stockNames, setStockNames] = useState<Record<string, string>>({});
-  const [modalVisible, setModalVisible] = useState(false);
-  const [selectedStockData, setSelectedStockData] = useState<any>(null);
-  const [selectedRule, setSelectedRule] = useState<string | undefined>(undefined);
-  const [availableRules, setAvailableRules] = useState<string[]>([]);
+  const [selectedSentiment, setSelectedSentiment] = useState<string | undefined>(undefined);
   const [stockNameFilter, setStockNameFilter] = useState<string>('');
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [aiInput, setAiInput] = useState<string>('');
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiStockCodes, setAiStockCodes] = useState<string[]>([]);
   const [aiApplied, setAiApplied] = useState<boolean>(false);
-  
+
   // 对话相关状态
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('opportunity_analysis');
-  
+
   // 分析历史记录
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistory[]>([]);
-  const [showLatestDateKLine, setShowLatestDateKLine] = useState<boolean>(false); // K线图显示最新日期数据开关
-  const [latestTradingDate, setLatestTradingDate] = useState<string>(new Date().toISOString().split('T')[0]); // 实际最新交易日
+  const [showLatestDateKLine, setShowLatestDateKLine] = useState<boolean>(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
+  const kLineRequestId = useRef<number>(0);
 
-  // 获取股票列表
-  const fetchStocks = async (date: string, industry: string = '', stockCodes: string[] = []) => {
+  // 收藏相关状态
+  const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
+  const [onlyFavorites, setOnlyFavorites] = useState<boolean>(false);
+
+  // 从后端加载收藏列表（组件首次挂载时）
+  const loadFavorites = async () => {
+    try {
+      const list = await getFavoriteList();
+      const favSet = new Set<string>();
+      for (const item of list) {
+        if (item && item.status === 1) {
+          favSet.add(item.stock_code);
+        }
+      }
+      setFavStockCodes(favSet);
+    } catch (e: any) {
+      console.error('加载收藏列表失败:', e);
+      message.error('加载收藏列表失败');
+    }
+  };
+
+  // 点击星标：收藏或取消收藏
+  const toggleFavorite = async (stockCode: string) => {
+    const currentlyFav = favStockCodes.has(stockCode);
+    const nextStatus = currentlyFav ? 0 : 1;
+    const payload: { price_date?: string; status: number } = { status: nextStatus };
+    if (nextStatus === 1) {
+      // 收藏时把当前查询日期作为 price_date 写入
+      payload.price_date = selectedDate || new Date().toISOString().split('T')[0];
+    }
+    try {
+      await upsertFavorite(stockCode, payload);
+      const next = new Set(favStockCodes);
+      if (nextStatus === 1) {
+        next.add(stockCode);
+      } else {
+        next.delete(stockCode);
+      }
+      setFavStockCodes(next);
+      // 若处于"只看收藏"模式，且取消了收藏，需要实时更新 filteredStocks
+      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter) {
+        setFilteredStocks(applyFilters(stocks, {
+          industry: selectedIndustry,
+          sentiment: selectedSentiment,
+          keyword: stockNameFilter,
+          markets: selectedMarkets,
+          favoriteOnly: onlyFavorites,
+          favStockCodes: next,
+        }));
+      }
+    } catch (e: any) {
+      console.error('更新收藏失败:', e);
+      message.error('更新收藏失败');
+    }
+  };
+
+  const clearChart = () => {
+    if (chartInstance.current) {
+      chartInstance.current.clear();
+    }
+  };
+
+  // 获取股票列表 - date 为空时后端会自动 fallback 到数据库中最新交易日
+  const fetchStocks = async (date?: string, stockCodes: string[] = []) => {
     console.log('调用getStockList，股票代码:', stockCodes);
     setLoading(true);
     try {
-      const data = await getStockList(date, industry, stockCodes);
+      // 总是拉取整份数据，由前端统一做筛选
+      const data = await getStockList(date ?? '', '', stockCodes);
       console.log('后端返回的数据:', data);
-      
-      // 直接使用后端返回的数据，因为已经在后端进行了过滤
-      let filteredByAi = data;
-      
+
       // 提取行业列表
       const industrySet = new Set<string>();
-      filteredByAi.forEach((stock: StockData) => {
+      data.forEach((stock: StockData) => {
         if (stock.industry) {
           industrySet.add(stock.industry);
         }
       });
       setIndustries(Array.from(industrySet).sort());
-      
+
       // 构建股票代码到名称的映射
       const names: Record<string, string> = {};
-      filteredByAi.forEach((stock: StockData) => {
+      data.forEach((stock: StockData) => {
         names[stock.stock_code] = stock.stock_name;
       });
       setStockNames(names);
-      
-      // 批量获取异动数据
-      try {
-        const { getAnomalyStocks } = await import('../api/api');
-        const anomalyStocks = await getAnomalyStocks(date);
-        const anomalyMap: Record<string, any> = {};
-        
-        if (anomalyStocks) {
-          anomalyStocks.forEach((stock: any) => {
-            anomalyMap[stock.stock_code] = {
-              total_triggers: stock.total_triggers,
-              triggered_rules: stock.triggered_rules
-            };
-          });
-        }
-        
-        // 合并异动数据到股票列表
-        const mergedData = filteredByAi.map((stock: any) => ({
-          ...stock,
-          ...anomalyMap[stock.stock_code]
-        }));
-        
-        // 提取所有可用的规则
-        const ruleSet = new Set<string>();
-        mergedData.forEach((stock: any) => {
-          if (stock.triggered_rules) {
-            stock.triggered_rules.forEach((rule: any) => {
-              ruleSet.add(rule.rule_chinese_name || rule.rule_name);
-            });
-          }
-        });
-        setAvailableRules(Array.from(ruleSet).sort());
-        
-        setStocks(mergedData);
-        // 应用规则筛选和股票名称过滤
-        let filtered = mergedData;
-        if (selectedRule) {
-          filtered = filtered.filter((stock: any) => {
-            if (!stock.triggered_rules) return false;
-            return stock.triggered_rules.some((rule: any) => 
-              (rule.rule_chinese_name || rule.rule_name) === selectedRule
-            );
-          });
-        }
-        // 应用股票名称模糊查询
-        if (stockNameFilter) {
-          const filterLower = stockNameFilter.toLowerCase();
-          filtered = filtered.filter((stock: any) => 
-            stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
-          );
-        }
-        // 应用市场筛选
-        filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
-        setFilteredStocks(filtered);
-      } catch (error) {
-        console.error('获取异动数据失败:', error);
-        // 如果获取异动数据失败，使用过滤后的数据
-        setStocks(filteredByAi);
-        setFilteredStocks(filteredByAi);
-      }
+
+      setStocks(data);
+      setFilteredStocks(applyFilters(data, {
+        industry: selectedIndustry,
+        sentiment: selectedSentiment,
+        keyword: stockNameFilter,
+        markets: selectedMarkets,
+        favoriteOnly: onlyFavorites,
+        favStockCodes: favStockCodes,
+      }));
     } catch (error) {
       message.error('获取股票列表失败');
     } finally {
       setLoading(false);
     }
-  };
-
-  // 处理规则点击事件，显示股票详情弹窗
-  const handleRuleClick = (record: any) => {
-    setSelectedStockData(record);
-    setModalVisible(true);
   };
 
   // 初始化 ECharts 实例
@@ -286,6 +352,35 @@ const StockList: React.FC = () => {
       item.date,
       item.ma60 !== null ? parseFloat(item.ma60 as any) : null
     ]);
+
+    // N 周期高/低点计算（H20/H60/H120, L20）
+    // 语义：到当前交易日为止，回看近 N 个交易日的最高价 / 最低价
+    const computeRollingHighLow = (items: any, period: number) => {
+      const highs: (number | null)[] = [];
+      const lows: (number | null)[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const start = Math.max(0, i - period + 1);
+        let h = -Infinity;
+        let l = Infinity;
+        let valid = false;
+        for (let j = start; j <= i; j++) {
+          const hj = parseFloat(items[j].high);
+          const lj = parseFloat(items[j].low);
+          if (!isNaN(hj) && hj > h) h = hj;
+          if (!isNaN(lj) && lj < l) l = lj;
+          valid = true;
+        }
+        highs.push(valid ? h : null);
+        lows.push(valid ? l : null);
+      }
+      return { highs, lows };
+    };
+
+    const periods = [20, 60, 120];
+    const hlByPeriod: Record<number, { highs: (number | null)[]; lows: (number | null)[] }> = {};
+    periods.forEach((p) => {
+      hlByPeriod[p] = computeRollingHighLow(data, p);
+    });
     
     const option = {
       tooltip: {
@@ -346,20 +441,31 @@ const StockList: React.FC = () => {
                    最低: ${low.toFixed(2)}<br/>
                    最高: ${high.toFixed(2)}<br/>
                    涨跌幅: <span style="color: ${changeRateColor}">${changeRate}%</span><br/>
-                   MA5: ${ma5}<br/>
-                   MA10: ${ma10}<br/>
-                   MA20: ${ma20}<br/>
+                   MA5: ${ma5} <br/>
+                   MA10: ${ma10} <br/>
+                   MA20: ${ma20} <br/>
                    MA60: ${ma60}<br/>
+                   H20: ${(hlByPeriod[20].highs[dataIndex] ?? 0).toFixed(2)} / L20: ${(hlByPeriod[20].lows[dataIndex] ?? 0).toFixed(2)}<br/>
+                   H60: ${(hlByPeriod[60].highs[dataIndex] ?? 0).toFixed(2)}<br/>
+                   H120: ${(hlByPeriod[120].highs[dataIndex] ?? 0).toFixed(2)}<br/>
                    成交量: ${volume}<br/>
                    成交额: ${amount}`;
           }
         },
-      legend: {
-        data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
-        top: 5,
-        left: 80,
-        align: 'left'
-      },
+      legend: [
+        {
+          data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
+          top: 0,
+          left: 0,
+          align: 'left'
+        },
+        {
+          data: ['H20', 'H60', 'H120', 'L20'],
+          top: 5,
+          right: 0,
+          align: 'left'
+        }
+      ],
       dataZoom: [
         {
           type: 'inside',
@@ -512,8 +618,8 @@ const StockList: React.FC = () => {
           data: ma5Data.map(item => item[1]),
           smooth: true,
           lineStyle: {
-            width: 1,
-            color: '#ff4d4f' // 红色
+            width: 0.8,
+            color: '#4874CB' // 蓝色
           },
           symbol: 'none'
         },
@@ -523,8 +629,8 @@ const StockList: React.FC = () => {
           data: ma10Data.map(item => item[1]),
           smooth: true,
           lineStyle: {
-            width: 1,
-            color: '#1890ff' // 蓝色
+            width: 0.8,
+            color: '#B68D01' // 黄色
           },
           symbol: 'none'
         },
@@ -534,8 +640,8 @@ const StockList: React.FC = () => {
           data: ma20Data.map(item => item[1]),
           smooth: true,
           lineStyle: {
-            width: 1,
-            color: '#52c41a' // 绿色
+            width: 0.8,
+            color: '#BD5AFF' // 紫紫色
           },
           symbol: 'none'
         },
@@ -545,10 +651,47 @@ const StockList: React.FC = () => {
           data: ma60Data.map(item => item[1]),
           smooth: true,
           lineStyle: {
-            width: 1,
-            color: '#faad14' // 黄色
+            width: 0.8,
+            color: '#689EFF' // 蓝紫色
           },
           symbol: 'none'
+        },
+        // N 周期高/低点：红色系高点 + 绿色系低点，随周期增长颜色加深，虚线
+        {
+          name: 'H20',
+          type: 'line',
+          data: hlByPeriod[20].highs,
+          smooth: false,
+          showSymbol: false,
+          symbol: 'none',
+          lineStyle: { width: 1, color: '#ef232a', type: 'dashed' }
+        },
+        {
+          name: 'H60',
+          type: 'line',
+          data: hlByPeriod[60].highs,
+          smooth: false,
+          showSymbol: false,
+          symbol: 'none',
+          lineStyle: { width: 1, color: '#FF01FF', type: 'dashed' }
+        },
+        {
+          name: 'H120',
+          type: 'line',
+          data: hlByPeriod[120].highs,
+          smooth: false,
+          showSymbol: false,
+          symbol: 'none',
+          lineStyle: { width: 1, color: '#9d0208', type: 'dashed' }
+        },
+        {
+          name: 'L20',
+          type: 'line',
+          data: hlByPeriod[20].lows,
+          smooth: false,
+          showSymbol: false,
+          symbol: 'none',
+          lineStyle: { width: 1, color: '#0b140dff', type: 'dashed' }
         },
         {
           name: '成交量',
@@ -575,17 +718,38 @@ const StockList: React.FC = () => {
   const fetchKLineData = async (stockCode: string, _days: number = 20, endDate: string = selectedDate) => {
     // 总是获取所有可用数据，用于支持完整的缩放功能（传入的 days 仅作签名占位）
     const validDays = 9999; // 使用大值确保获取所有数据
-    console.log('Fetching K line data for:', stockCode, 'endDate:', endDate);
+    const myReqId = ++kLineRequestId.current;
+    console.log('Fetching K line data for:', stockCode, 'endDate:', endDate, 'reqId:', myReqId);
     setKLineLoading(true);
     try {
-      const data = await getStockKLineData(stockCode, validDays, endDate);
+      let data = await getStockKLineData(stockCode, validDays, endDate);
+      // 兜底：当指定 endDate 返回空数据（例如上市天数不足 / 数据尚未入库）时，
+      // 再尝试一次"不指定 endDate"请求，让后端用最新交易日回退，尽可能画出图
+      if ((!Array.isArray(data) || data.length === 0) && endDate) {
+        console.log('Primary endDate returned empty, retry without end_date for:', stockCode);
+        const fallback = await getStockKLineData(stockCode, validDays, '');
+        if (myReqId !== kLineRequestId.current) {
+          console.log('Discard stale fallback K line response for reqId:', myReqId);
+          return;
+        }
+        data = fallback;
+      } else if (myReqId !== kLineRequestId.current) {
+        console.log('Discard stale K line response for reqId:', myReqId);
+        return;
+      }
       console.log('K line data received:', data);
       setKLineData(data);
-      // 渲染图表由useEffect处理，这里不需要手动调用
+      if (!Array.isArray(data) || data.length === 0) {
+        // 后端返回空数据时，主动清空旧图，避免永远卡在之前的股票图形
+        clearChart();
+      }
     } catch (error) {
+      if (myReqId !== kLineRequestId.current) return;
       console.error('Error fetching K line data:', error);
       message.error('获取 K 线数据失败');
+      clearChart();
     } finally {
+      if (myReqId !== kLineRequestId.current) return;
       setKLineLoading(false);
     }
   };
@@ -623,18 +787,21 @@ const StockList: React.FC = () => {
       const startPercent = (startIndex / kLineData.length) * 100;
       const endPercent = 100;
       renderKLineChart(kLineData, startPercent, endPercent);
+    } else if (selectedStock) {
+      // 已选中股票但无数据，不要让旧图残留
+      clearChart();
     }
-  }, [kLineData, timeRange]);
+  }, [kLineData, timeRange, selectedStock]);
 
-  // 日期变化处理
+  // 日期变化处理 - 重新拉取全量数据
   const handleDateChange = (date: any) => {
     if (date) {
       const newDate = typeof date === 'string' ? date : date.format('YYYY-MM-DD');
       setSelectedDate(newDate);
       setSelectedIndustry('');
       setAiApplied(false);
-      fetchStocks(newDate, '');
-      
+      fetchStocks(newDate);
+
       // 如果已经选择了股票，重新获取K线图数据，使用新的日期作为结束日期
       if (selectedStock) {
         fetchKLineData(selectedStock, parseInt(timeRange), newDate);
@@ -642,87 +809,90 @@ const StockList: React.FC = () => {
     }
   };
 
-  // 行业变化处理
+  // 行业变化处理 - 纯前端筛选
   const handleIndustryChange = (value: string | null) => {
-    setSelectedIndustry(value || '');
-    fetchStocks(selectedDate, value || '', aiApplied ? aiStockCodes : undefined);
+    const industry = value || '';
+    setSelectedIndustry(industry);
+    setFilteredStocks(applyFilters(stocks, {
+      industry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+    }));
   };
 
-  // 规则变化处理
-  const handleRuleChange = (value: string | null) => {
-    setSelectedRule(value || '');
-    // 重新应用筛选
-    let filtered = stocks;
-    if (value) {
-      filtered = filtered.filter((stock: any) => {
-        if (!stock.triggered_rules) return false;
-        return stock.triggered_rules.some((rule: any) => 
-          (rule.rule_chinese_name || rule.rule_name) === value
-        );
-      });
-    }
-    // 应用股票名称模糊查询
-    if (stockNameFilter) {
-      const filterLower = stockNameFilter.toLowerCase();
-      filtered = filtered.filter((stock: any) => 
-        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
-      );
-    }
-    // 应用市场筛选
-    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
-    setFilteredStocks(filtered);
+  // Sentiment 变化处理 - 纯前端筛选
+  const handleSentimentChange = (value: string | null) => {
+    const sentiment = value || '';
+    setSelectedSentiment(sentiment);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+    }));
   };
 
-  // 股票名称过滤变化处理
+  // 股票名称/代码过滤变化处理 - 纯前端筛选
   const handleStockNameFilterChange = (value: string) => {
     setStockNameFilter(value);
-    // 重新应用筛选
-    let filtered = stocks;
-    if (selectedRule) {
-      filtered = filtered.filter((stock: any) => {
-        if (!stock.triggered_rules) return false;
-        return stock.triggered_rules.some((rule: any) => 
-          (rule.rule_chinese_name || rule.rule_name) === selectedRule
-        );
-      });
-    }
-    if (value) {
-      const filterLower = value.toLowerCase();
-      filtered = filtered.filter((stock: any) => 
-        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
-      );
-    }
-    // 应用市场筛选
-    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
-    setFilteredStocks(filtered);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: value,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+    }));
   };
 
-  // 市场筛选变化处理
+  // 市场筛选变化处理 - 纯前端筛选
   const handleMarketsChange = (value: string[]) => {
     setSelectedMarkets(value);
-    let filtered = stocks;
-    if (selectedRule) {
-      filtered = filtered.filter((stock: any) => {
-        if (!stock.triggered_rules) return false;
-        return stock.triggered_rules.some((rule: any) => 
-          (rule.rule_chinese_name || rule.rule_name) === selectedRule
-        );
-      });
-    }
-    if (stockNameFilter) {
-      const filterLower = stockNameFilter.toLowerCase();
-      filtered = filtered.filter((stock: any) => 
-        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
-      );
-    }
-    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, value));
-    setFilteredStocks(filtered);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: value,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+    }));
+  };
+
+  // 重置所有 applyFilters 相关的筛选条件（行业 / 情绪 / 名称代码 / 市场）
+  const resetFilters = () => {
+    setSelectedIndustry('');
+    setSelectedSentiment('');
+    setStockNameFilter('');
+    setSelectedMarkets(MARKET_OPTIONS.map((o) => o.value));
+    // 仅重置 applyFilters 相关筛选；是否仅看收藏由 Switch 独立控制
+    setFilteredStocks(applyFilters(stocks, {
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+    }));
+  };
+
+  // 仅看收藏开关变化处理
+  const handleOnlyFavoritesChange = (checked: boolean) => {
+    setOnlyFavorites(checked);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: checked,
+      favStockCodes: favStockCodes,
+    }));
   };
 
   // 清除AI分析结果
   const clearAiAnalysis = () => {
     setAiApplied(false);
-    fetchStocks(selectedDate, selectedIndustry);
+    fetchStocks(selectedDate);
     message.success('已清除AI分析结果');
   };
 
@@ -730,7 +900,7 @@ const StockList: React.FC = () => {
   const applyAiAnalysis = () => {
     if (aiStockCodes.length > 0) {
       console.log('应用AI分析结果，股票代码:', aiStockCodes);
-      fetchStocks(selectedDate, selectedIndustry, aiStockCodes);
+      fetchStocks(selectedDate, aiStockCodes);
       setDrawerVisible(false);
       setAiApplied(true);
       message.success(`Apply ${aiStockCodes.length} opportunities`);
@@ -743,7 +913,7 @@ const StockList: React.FC = () => {
   const applyHistoryAnalysis = (stockCodes: string[], prompt: string) => {
     console.log('应用历史分析结果，股票代码:', stockCodes);
     setAiStockCodes(stockCodes);
-    fetchStocks(selectedDate, selectedIndustry, stockCodes);
+    fetchStocks(selectedDate, stockCodes);
     setDrawerVisible(false);
     setAiApplied(true);
     message.success(`已应用历史分析: "${prompt.substring(0, 30)}..."`);
@@ -755,20 +925,24 @@ const StockList: React.FC = () => {
     message.success('已删除历史记录');
   };
 
-  // 股票选择处理
+  // 股票选择处理 - 选新股票前先清空旧图并显示loading，避免"先坍缩再渲染"
   const handleStockSelect = (stockCode: string) => {
     console.log('Selected stock:', stockCode);
     setSelectedStock(stockCode);
-    // 根据开关状态决定使用哪个日期作为K线图结束日期
+    setKLineLoading(true);
+    clearChart();
     const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
     fetchKLineData(stockCode, parseInt(timeRange), kLineEndDate);
   };
 
-  // 时间范围变化处理
+  // 时间范围变化处理 - 切换周期前先清空旧图并显示loading，避免"先坍缩再渲染"
   const handleTimeRangeChange = (value: string) => {
     setTimeRange(value);
     if (selectedStock) {
-      // 根据开关状态决定使用哪个日期作为K线图结束日期
+      setKLineLoading(true);
+      if (chartInstance.current) {
+        chartInstance.current.clear();
+      }
       const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
       fetchKLineData(selectedStock, parseInt(value), kLineEndDate);
     }
@@ -861,40 +1035,48 @@ const StockList: React.FC = () => {
     loadSkills();
   }, []);
 
-  // 组件初始化时加载数据
+  // 组件初始化时加载数据：
+  // 1) 先向后端拉"最新交易日"，避免用"今天"拿到空数据；
+  // 2) 再用该日期（或不传让后端 fallback）拉全量列表。
   useEffect(() => {
-    const loadLatestTradingDay = async () => {
+    const initData = async () => {
       try {
-        const result = await getLatestTradingDay();
-        const latestDate = result.date;
-        setLatestTradingDate(latestDate); // 保存最新交易日
+        const latest = await getLatestTradingDay();
+        const latestDate = (latest && latest.date) || todayStr;
+        setLatestTradingDate(latestDate);
         setSelectedDate(latestDate);
-        fetchStocks(latestDate, '', aiApplied ? aiStockCodes : undefined);
       } catch (error) {
-        message.error('获取最新交易日失败');
-        // 如果获取最新交易日失败，使用当前日期
-        fetchStocks(selectedDate, '', aiApplied ? aiStockCodes : undefined);
+        console.error('获取最新交易日失败，回退为今天:', error);
       }
+      loadFavorites();
+      fetchStocks('', aiApplied ? aiStockCodes : undefined);
     };
-    loadLatestTradingDay();
+    initData();
   }, []);
 
   // 表格列定义
   const columns: ColumnType<StockData>[] = [
     {
-      title: 'Date',
-      dataIndex: 'date',
-      key: 'date',
-      width: 100,
+      title: 'Fav',
+      key: 'favorite',
+      width: 60,
       align: 'center',
-    },
-    {
-      title: 'Industry',
-      dataIndex: 'industry',
-      key: 'industry',
-      width: 150,
-      align: 'center',
-      render: (text: any) => text || '未知',
+      fixed: 'left',
+      render: (_: any, record: any) => {
+        const isFav = favStockCodes.has(record.stock_code);
+        return (
+          <Button
+            type="text"
+            size="small"
+            style={{ padding: 0 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleFavorite(record.stock_code);
+            }}
+            icon={isFav ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined style={{ color: '#bfbfbf' }} />}
+          />
+        );
+      },
     },
     {
       title: 'Code',
@@ -912,6 +1094,14 @@ const StockList: React.FC = () => {
       key: 'stock_name',
       width: 100,
       align: 'center',
+    },
+    {
+      title: 'Industry',
+      dataIndex: 'industry',
+      key: 'industry',
+      width: 150,
+      align: 'center',
+      render: (text: any) => text || '未知',
     },
     {
       title: 'Close',
@@ -935,8 +1125,8 @@ const StockList: React.FC = () => {
       render: (text: any) => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
-          <Text style={{ color: value >= 0 ? 'red' : 'green' }}>
-            {value.toFixed(2)}
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(2)}
           </Text>
         );
       },
@@ -958,7 +1148,7 @@ const StockList: React.FC = () => {
       },
     },
     {
-      title: 'U-days',
+      title: 'Days',
       dataIndex: 'growth_streak_days',
       key: 'growth_streak_days',
       width: 80,
@@ -966,11 +1156,12 @@ const StockList: React.FC = () => {
       sorter: (a: any, b: any) => (a.growth_streak_days || 0) - (b.growth_streak_days || 0),
     },
     {
-      title: 'U-pct',
+      title: 'Days%',
       dataIndex: 'growth_streak_pct',
       key: 'growth_streak_pct',
       width: 100,
       align: 'right',
+      sorter: (a: any, b: any) => (a.growth_streak_pct || 0) - (b.growth_streak_pct || 0),
       render: (text: any) => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
@@ -981,7 +1172,7 @@ const StockList: React.FC = () => {
       },
     },
     {
-      title: 'Market(R)',
+      title: 'Cup(0.1B)',
       dataIndex: 'market_cap_r',
       key: 'market_cap_r',
       width: 120,
@@ -1008,57 +1199,8 @@ const StockList: React.FC = () => {
         const color = value >= 0 ? '#ef232a' : '#11c26d';
         return (
           <Text style={{ color: color }}>
-            {value >= 0 ? '+' : ''}{value.toFixed(2)}%
+            {value >= 0 ? '+' : ''}{value.toFixed(2)}
           </Text>
-        );
-      },
-    },
-    {
-      title: 'Scan cnt',
-      dataIndex: 'total_triggers',
-      key: 'total_triggers',
-      width: 80,
-      align: 'right',
-      sorter: (a: any, b: any) => (a.total_triggers || 0) - (b.total_triggers || 0),
-      render: (text: any) => {
-        const value = text || 0;
-        return (
-          <Text style={{ color: value > 0 ? 'red' : 'inherit' }}>
-            {value}
-          </Text>
-        );
-      },
-    },
-    {
-      title: 'Scan rules',
-      dataIndex: 'triggered_rules',
-      key: 'triggered_rules',
-      width: 100,
-      align: 'left',
-      ellipsis: true,
-      render: (rules: any[], record: any) => {
-        if (!rules || rules.length === 0) return '-';
-        const ruleNames = rules.map(rule => rule.rule_chinese_name || rule.rule_name);
-        const displayText = ruleNames.map(name => `【${name}】`).join(' ');
-        return (
-          <Tooltip title={displayText}>
-            <a
-              onClick={(e) => {
-                e.stopPropagation();
-                handleRuleClick(record);
-              }}
-              style={{
-                display: 'block',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                color: 'inherit',
-                textDecoration: 'none',
-              }}
-            >
-              {displayText}
-            </a>
-          </Tooltip>
         );
       },
     },
@@ -1110,21 +1252,16 @@ const StockList: React.FC = () => {
           options={industries.map(industry => ({ label: industry, value: industry }))}
         />
         <Select
-          placeholder="Search by Rule"
-          style={{ width: 200, marginRight: '12px' }}
-          value={selectedRule}
-          onChange={handleRuleChange}
+          placeholder="Search by Sentiment"
+          style={{ width: 220, marginRight: '12px' }}
+          value={selectedSentiment}
+          onChange={handleSentimentChange}
           allowClear
-          showSearch
-          optionFilterProp="label"
-          filterOption={(input, option) =>
-            String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-          }
-          options={availableRules.map(rule => ({ label: rule, value: rule }))}
+          options={SENTIMENT_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
         />
          <Input
-          placeholder="Search by Name"
-          style={{ width: 200, marginRight: '12px' }}
+          placeholder="Search by Name or Code"
+          style={{ width: 220, marginRight: '12px' }}
           value={stockNameFilter}
           onChange={(e) => handleStockNameFilterChange(e.target.value)}
           allowClear
@@ -1167,14 +1304,22 @@ const StockList: React.FC = () => {
           </div>
         )}
         <Button
-          type="primary"
-          icon={<CalendarOutlined />}
-          onClick={() => fetchStocks(selectedDate, selectedIndustry, aiApplied ? aiStockCodes : undefined)}
-          loading={loading}
+          type="default"
+          icon={<ReloadOutlined />}
+          onClick={resetFilters}
           style={{ marginRight: '12px' }}
         >
-          查询
+          Reset
         </Button>
+        <div style={{ marginRight: '12px', display: 'flex', alignItems: 'center' }}>
+          <Switch
+            checked={onlyFavorites}
+            onChange={handleOnlyFavoritesChange}
+            checkedChildren="Off"
+            unCheckedChildren="Star"
+          />
+        </div>
+
         <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
           <Button
             type="default"
@@ -1188,7 +1333,7 @@ const StockList: React.FC = () => {
 
       <div style={{ width: '100%', flex: 1, display: 'flex', gap: 16, overflowX: 'hidden' }}>
         {/* 左侧股票列表 */}
-        <div style={{ flex: 6, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 5.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column' }}>
             <div style={{ flex: 1, overflowX: 'auto' }}>
               <div style={{ minWidth: 600 }}>
@@ -1206,12 +1351,12 @@ const StockList: React.FC = () => {
         </div>
 
         {/* 右侧 K 线图 */}
-        <div style={{ flex: 4, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 4.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Card style={{ flex: 1, minWidth: 600, padding: 0, display: 'flex', flexDirection: 'column', minHeight: '600px' }} title={
             <Space>
               {selectedStock ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  <span>{stockNames[selectedStock]} ({selectedStock})</span>
+                  <span>{stockNames[selectedStock]} {selectedStock}</span>
                   <a
                     href={(() => {
                       let market = '0';
@@ -1255,27 +1400,29 @@ const StockList: React.FC = () => {
                   onChange={(checked) => {
                     setShowLatestDateKLine(checked);
                     if (selectedStock) {
+                      setKLineLoading(true);
+                      if (chartInstance.current) {
+                        chartInstance.current.clear();
+                      }
                       const kLineEndDate = checked ? latestTradingDate : selectedDate;
                       fetchKLineData(selectedStock, parseInt(timeRange), kLineEndDate);
                     }
                   }}
-                  checkedChildren="Today"
-                  unCheckedChildren="Date"
+                  checkedChildren="Date"
+                  unCheckedChildren="Latest"
                 />
               </div>
             </Space>
           }>
             <div style={{ flex: 1, width: '100%', minHeight: '500px' }}>
               {selectedStock ? (
-                <div style={{ width: '100%', height: '100%' }}>
-                  {kLineLoading ? (
-                    <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Text>加载中...</Text>
-                    </div>
-                  ) : (
-                    <div ref={chartRef} style={{ width: '100%', height: '100%', minHeight: '400px' }} />
-                  )}
-                </div>
+                <Spin
+                  spinning={kLineLoading}
+                  tip="加载K线数据..."
+                  style={{ width: '100%', height: '100%' }}
+                >
+                  <div ref={chartRef} style={{ width: '100%', height: '100%', minHeight: '400px' }} />
+                </Spin>
               ) : (
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Text>请选择一只股票查看 K 线图</Text>
@@ -1285,39 +1432,6 @@ const StockList: React.FC = () => {
           </Card>
         </div>
       </div>
-
-      {/* 股票详情弹窗 */}
-      <Modal
-        title={`${selectedStockData?.stock_name} (${selectedStockData?.stock_code}) 详情`}
-        open={modalVisible}
-        onCancel={() => setModalVisible(false)}
-        footer={[
-          <Button key="close" onClick={() => setModalVisible(false)}>
-            关闭
-          </Button>
-        ]}
-        width={800}
-      >
-        {selectedStockData && (
-          <div>
-            <p><strong>行业:</strong> {selectedStockData.industry || '未知'}</p>
-            <p><strong>日期:</strong> {selectedStockData.date}</p>
-            <p><strong>收盘价:</strong> {selectedStockData.close?.toFixed(2) || '0.00'}</p>
-            <p><strong>涨跌幅:</strong> <Text style={{ color: selectedStockData.change_rate >= 0 ? 'red' : 'green' }}>
-              {selectedStockData.change_rate?.toFixed(2) || '0.00'}
-            </Text></p>
-            <p><strong>连涨天数:</strong> {selectedStockData.growth_streak_days || 0}</p>
-            <p><strong>连涨幅度:</strong> {selectedStockData.growth_streak_pct?.toFixed(2) || '0.00'}</p>
-            <p><strong>触发规则数:</strong> {selectedStockData.total_triggers || 0}</p>
-            <p><strong>触发规则:</strong></p>
-            <ul>
-              {selectedStockData.triggered_rules?.map((rule: any, index: number) => (
-                <li key={index}>{rule.rule_chinese_name || rule.rule_name}</li>
-              )) || <li>无</li>}
-            </ul>
-          </div>
-        )}
-      </Modal>
 
       {/* AI分析抽屉 */}
       <Drawer

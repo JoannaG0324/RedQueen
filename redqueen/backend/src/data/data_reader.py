@@ -164,19 +164,19 @@ class DataReader:
         return standardized_data
     
     def _validate_data(self, data: Dict[str, Any], days: int = 60) -> bool:
-        """数据校验"""
-        # 检查数据长度，使用合理的最小数据长度要求
-        # 对于任何天数，要求至少有 20 天的数据
-        min_days = min(20, max(10, int(days * 0.5)))
-        if len(data["dates"]) < min_days:
+        """数据校验 - 有多少数据就返回多少，不再限制最小天数"""
+        # 至少要有 1 天数据，否则返回 None
+        if not data.get("dates") or len(data["dates"]) < 1:
             return False
-        
-        # 检查关键指标是否有足够的数据
+
+        # 检查关键指标是否有足够的数据（保留数据完整性校验，但降低阈值）
         for key in ["close", "volume"]:
-            valid_count = sum(1 for x in data[key] if x is not None)
-            if valid_count < len(data[key]) * 0.6:
+            if key not in data or not data[key]:
                 return False
-        
+            valid_count = sum(1 for x in data[key] if x is not None)
+            if valid_count < 1:
+                return False
+
         return True
     
     def get_stock_industry(self, stock_code: str) -> Dict[str, str]:
