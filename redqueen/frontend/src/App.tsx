@@ -12,7 +12,8 @@ const App: React.FC = () => {
     <Router>
       <Layout>
         <Routes>
-          <Route path="/" element={<AnomalyList />} />
+          <Route path="/" element={<Heatmap />} />
+          <Route path="/anomaly" element={<AnomalyList />} />
           <Route path="/stock-list" element={<StockList />} />
           <Route path="/industry" element={<Industry />} />
           <Route path="/heatmap" element={<Heatmap />} />

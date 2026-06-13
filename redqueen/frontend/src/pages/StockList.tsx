@@ -54,13 +54,13 @@ interface KLineData {
 }
 
 const SENTIMENT_OPTIONS = [
-  { value: '0', label: '0 ([0, 1))' },
-  { value: '1', label: '1 ([1, 2))' },
-  { value: '2', label: '2 ((2, 3))' },
-  { value: '3', label: '3 ([3, 4])' },
-  { value: '4', label: '4 ([4, 5))' },
-  { value: '5', label: '5 ([5, 6))' },
-  { value: '5+', label: '5+ ([6, ∞))' },
+  { value: '0', label: '0 ' },
+  { value: '1', label: '1 ' },
+  { value: '2', label: '2 ' },
+  { value: '3', label: '3 ' },
+  { value: '4', label: '4 ' },
+  { value: '5', label: '5 ' },
+  { value: '5+', label: '5+ ' },
 ];
 
 const matchSentiment = (days: any, sentiment: string): boolean => {
@@ -72,7 +72,7 @@ const matchSentiment = (days: any, sentiment: string): boolean => {
     case '1':
       return d >= 1 && d < 2;
     case '2':
-      return d > 2 && d < 3;
+      return d >= 2 && d < 3;
     case '3':
       return d >= 3 && d < 4;
     case '4':
@@ -1231,7 +1231,7 @@ const StockList: React.FC = () => {
         />
         <Select
           mode="multiple"
-          placeholder="Filter by Market"
+          placeholder="By Market"
           style={{ width: 200, marginRight: '12px' }}
           value={selectedMarkets}
           onChange={handleMarketsChange}
@@ -1239,7 +1239,7 @@ const StockList: React.FC = () => {
           options={MARKET_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
         />
         <Select
-          placeholder="Search by Industry"
+          placeholder="By Industry"
           style={{ width: 200, marginRight: '12px' }}
           value={selectedIndustry}
           onChange={handleIndustryChange}
@@ -1252,7 +1252,7 @@ const StockList: React.FC = () => {
           options={industries.map(industry => ({ label: industry, value: industry }))}
         />
         <Select
-          placeholder="Search by Sentiment"
+          placeholder="By Sentiment"
           style={{ width: 220, marginRight: '12px' }}
           value={selectedSentiment}
           onChange={handleSentimentChange}
@@ -1260,7 +1260,7 @@ const StockList: React.FC = () => {
           options={SENTIMENT_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
         />
          <Input
-          placeholder="Search by Name or Code"
+          placeholder="By Name or Code"
           style={{ width: 220, marginRight: '12px' }}
           value={stockNameFilter}
           onChange={(e) => handleStockNameFilterChange(e.target.value)}
