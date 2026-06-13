@@ -1,8 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button, Table, message, Space, Typography, Select, Input, Card, Tooltip, Modal, Radio, Drawer, Switch } from 'antd';
+import type { ColumnType } from 'antd/es/table';
 import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
 import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills } from '../api/api';
+
+const MARKET_OPTIONS = [
+  { value: 'SH_60', label: 'SH_60', prefixes: ['60'] },
+  { value: 'SH_688', label: 'SH_688', prefixes: ['688'] },
+  { value: 'SZ_0', label: 'SZ_0', prefixes: ['00'] },
+  { value: 'SZ_3', label: 'SZ_3', prefixes: ['30'] },
+  { value: 'BJ', label: 'BJ', prefixes: ['920'] },
+];
+
+const matchMarket = (stockCode: string, selectedMarkets: string[]): boolean => {
+  if (!selectedMarkets || selectedMarkets.length === 0) return true;
+  const code = stockCode || '';
+  return selectedMarkets.some((m) => {
+    const opt = MARKET_OPTIONS.find((o) => o.value === m);
+    if (!opt) return false;
+    return opt.prefixes.some((p) => code.startsWith(p));
+  });
+};
 
 const { Title, Text } = Typography;
 
@@ -66,6 +85,7 @@ const StockList: React.FC = () => {
   const [filteredStocks, setFilteredStocks] = useState<StockData[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedIndustry, setSelectedIndustry] = useState<string | undefined>(undefined);
+  const [selectedMarkets, setSelectedMarkets] = useState<string[]>(MARKET_OPTIONS.map((o) => o.value));
   const [industries, setIndustries] = useState<string[]>([]);
   const [selectedStock, setSelectedStock] = useState<string>('');
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
@@ -78,8 +98,7 @@ const StockList: React.FC = () => {
   const [stockNameFilter, setStockNameFilter] = useState<string>('');
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [aiInput, setAiInput] = useState<string>('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiResult, setAiResult] = useState<string>('');
+  const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiStockCodes, setAiStockCodes] = useState<string[]>([]);
   const [aiApplied, setAiApplied] = useState<boolean>(false);
   
@@ -108,7 +127,7 @@ const StockList: React.FC = () => {
       
       // 提取行业列表
       const industrySet = new Set<string>();
-      filteredByAi.forEach(stock => {
+      filteredByAi.forEach((stock: StockData) => {
         if (stock.industry) {
           industrySet.add(stock.industry);
         }
@@ -117,7 +136,7 @@ const StockList: React.FC = () => {
       
       // 构建股票代码到名称的映射
       const names: Record<string, string> = {};
-      filteredByAi.forEach(stock => {
+      filteredByAi.forEach((stock: StockData) => {
         names[stock.stock_code] = stock.stock_name;
       });
       setStockNames(names);
@@ -172,6 +191,8 @@ const StockList: React.FC = () => {
             stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
           );
         }
+        // 应用市场筛选
+        filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
         setFilteredStocks(filtered);
       } catch (error) {
         console.error('获取异动数据失败:', error);
@@ -304,12 +325,12 @@ const StockList: React.FC = () => {
             
             // 从原始数据中获取成交量、成交额和 MA 数据
             const stockData = data[dataIndex];
-            const volume = stockData.volume ? parseFloat(stockData.volume).toFixed(2) : '0.00';
-            const amount = stockData.amount ? parseFloat(stockData.amount).toFixed(2) : '0.00';
-            const ma5 = stockData.ma5 ? parseFloat(stockData.ma5).toFixed(2) : '0.00';
-            const ma10 = stockData.ma10 ? parseFloat(stockData.ma10).toFixed(2) : '0.00';
-            const ma20 = stockData.ma20 ? parseFloat(stockData.ma20).toFixed(2) : '0.00';
-            const ma60 = stockData.ma60 ? parseFloat(stockData.ma60).toFixed(2) : '0.00';
+            const volume = stockData.volume ? stockData.volume.toFixed(2) : '0.00';
+            const amount = stockData.amount ? stockData.amount.toFixed(2) : '0.00';
+            const ma5 = stockData.ma5 ? stockData.ma5.toFixed(2) : '0.00';
+            const ma10 = stockData.ma10 ? stockData.ma10.toFixed(2) : '0.00';
+            const ma20 = stockData.ma20 ? stockData.ma20.toFixed(2) : '0.00';
+            const ma60 = stockData.ma60 ? stockData.ma60.toFixed(2) : '0.00';
             
             const open = klineData[1] || 0;
             const close = klineData[2] || 0;
@@ -551,10 +572,10 @@ const StockList: React.FC = () => {
   };
 
   // 获取股票 K 线数据
-  const fetchKLineData = async (stockCode: string, days: number = 20, endDate: string = selectedDate) => {
-    // 总是获取所有数据，用于支持完整的缩放功能
+  const fetchKLineData = async (stockCode: string, _days: number = 20, endDate: string = selectedDate) => {
+    // 总是获取所有可用数据，用于支持完整的缩放功能（传入的 days 仅作签名占位）
     const validDays = 9999; // 使用大值确保获取所有数据
-    console.log('Fetching K line data for:', stockCode, 'days:', validDays, 'endDate:', endDate);
+    console.log('Fetching K line data for:', stockCode, 'endDate:', endDate);
     setKLineLoading(true);
     try {
       const data = await getStockKLineData(stockCode, validDays, endDate);
@@ -647,6 +668,8 @@ const StockList: React.FC = () => {
         stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
       );
     }
+    // 应用市场筛选
+    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
     setFilteredStocks(filtered);
   };
 
@@ -669,6 +692,30 @@ const StockList: React.FC = () => {
         stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
       );
     }
+    // 应用市场筛选
+    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, selectedMarkets));
+    setFilteredStocks(filtered);
+  };
+
+  // 市场筛选变化处理
+  const handleMarketsChange = (value: string[]) => {
+    setSelectedMarkets(value);
+    let filtered = stocks;
+    if (selectedRule) {
+      filtered = filtered.filter((stock: any) => {
+        if (!stock.triggered_rules) return false;
+        return stock.triggered_rules.some((rule: any) => 
+          (rule.rule_chinese_name || rule.rule_name) === selectedRule
+        );
+      });
+    }
+    if (stockNameFilter) {
+      const filterLower = stockNameFilter.toLowerCase();
+      filtered = filtered.filter((stock: any) => 
+        stock.stock_name && stock.stock_name.toLowerCase().includes(filterLower)
+      );
+    }
+    filtered = filtered.filter((stock: any) => matchMarket(stock.stock_code, value));
     setFilteredStocks(filtered);
   };
 
@@ -748,7 +795,6 @@ const StockList: React.FC = () => {
     try {
       // 调用AI分析（传递选中的Skill）
       const result = await analyzeOpportunityStocksAPI(aiInput, selectedSkill);
-      setAiResult(result.analysis);
       
       // 添加系统响应到对话历史
       const systemMessage: ChatMessage = {
@@ -834,7 +880,7 @@ const StockList: React.FC = () => {
   }, []);
 
   // 表格列定义
-  const columns = [
+  const columns: ColumnType<StockData>[] = [
     {
       title: 'Date',
       dataIndex: 'date',
@@ -988,23 +1034,30 @@ const StockList: React.FC = () => {
       dataIndex: 'triggered_rules',
       key: 'triggered_rules',
       width: 100,
-      maxWidth: 100,
       align: 'left',
       ellipsis: true,
-      render: (rules: any[]) => {
+      render: (rules: any[], record: any) => {
         if (!rules || rules.length === 0) return '-';
         const ruleNames = rules.map(rule => rule.rule_chinese_name || rule.rule_name);
         const displayText = ruleNames.map(name => `【${name}】`).join(' ');
         return (
           <Tooltip title={displayText}>
-            <span style={{ 
-              display: 'block', 
-              whiteSpace: 'nowrap', 
-              overflow: 'hidden', 
-              textOverflow: 'ellipsis'
-            }}>
+            <a
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRuleClick(record);
+              }}
+              style={{
+                display: 'block',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                color: 'inherit',
+                textDecoration: 'none',
+              }}
+            >
               {displayText}
-            </span>
+            </a>
           </Tooltip>
         );
       },
@@ -1035,21 +1088,27 @@ const StockList: React.FC = () => {
           style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '32px', marginRight: '12px' }}
         />
         <Select
+          mode="multiple"
+          placeholder="Filter by Market"
+          style={{ width: 200, marginRight: '12px' }}
+          value={selectedMarkets}
+          onChange={handleMarketsChange}
+          maxTagCount="responsive"
+          options={MARKET_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        />
+        <Select
           placeholder="Search by Industry"
           style={{ width: 200, marginRight: '12px' }}
           value={selectedIndustry}
           onChange={handleIndustryChange}
           allowClear
           showSearch
-          optionFilterProp="children"
+          optionFilterProp="label"
           filterOption={(input, option) =>
-            (option?.children as unknown as string).toLowerCase().includes(input.toLowerCase())
+            String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
           }
-        >
-          {industries.map(industry => (
-            <Select.Option key={industry} value={industry}>{industry}</Select.Option>
-          ))}
-        </Select>
+          options={industries.map(industry => ({ label: industry, value: industry }))}
+        />
         <Select
           placeholder="Search by Rule"
           style={{ width: 200, marginRight: '12px' }}
@@ -1057,15 +1116,12 @@ const StockList: React.FC = () => {
           onChange={handleRuleChange}
           allowClear
           showSearch
-          optionFilterProp="children"
+          optionFilterProp="label"
           filterOption={(input, option) =>
-            (option?.children as unknown as string).toLowerCase().includes(input.toLowerCase())
+            String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
           }
-        >
-          {availableRules.map(rule => (
-            <Select.Option key={rule} value={rule}>{rule}</Select.Option>
-          ))}
-        </Select>
+          options={availableRules.map(rule => ({ label: rule, value: rule }))}
+        />
          <Input
           placeholder="Search by Name"
           style={{ width: 200, marginRight: '12px' }}
@@ -1143,14 +1199,6 @@ const StockList: React.FC = () => {
                   loading={loading}
                   pagination={{ pageSize: 20 }}
                   size="small"
-                  paginationPosition="bottom"
-                  columnTitleProps={{
-                    style: {
-                      whiteSpace: 'nowrap',
-                      textOverflow: 'ellipsis',
-                      overflow: 'hidden'
-                    }
-                  }}
                 />
               </div>
             </div>
@@ -1162,23 +1210,34 @@ const StockList: React.FC = () => {
           <Card style={{ flex: 1, minWidth: 600, padding: 0, display: 'flex', flexDirection: 'column', minHeight: '600px' }} title={
             <Space>
               {selectedStock ? (
-                <a 
-                  href={(() => {
-                    let market = '0'; // 默认深圳市场
-                    if (selectedStock.startsWith('60') || selectedStock.startsWith('68')) {
-                      market = '1'; // 上海市场
-                    } else if (selectedStock.startsWith('00') || selectedStock.startsWith('30')) {
-                      market = '0'; // 深圳市场
-                    }
-                    return `https://quote.eastmoney.com/basic/h5chart-iframe.html?code=${selectedStock}&market=${market}&type=r`;
-                  })()} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  style={{ textDecoration: 'none', color: '#1890ff' }}
-                >
-                  {stockNames[selectedStock]} ({selectedStock})
-                </a>
-              ) : 'K 线图'}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <span>{stockNames[selectedStock]} ({selectedStock})</span>
+                  <a
+                    href={(() => {
+                      let market = '0';
+                      if (selectedStock.startsWith('60') || selectedStock.startsWith('68')) {
+                        market = '1';
+                      } else if (selectedStock.startsWith('00') || selectedStock.startsWith('30')) {
+                        market = '0';
+                      }
+                      return `https://quote.eastmoney.com/basic/h5chart-iframe.html?code=${selectedStock}&market=${market}&type=r`;
+                    })()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textDecoration: 'none', color: '#1890ff' }}
+                  >
+                    分时
+                  </a>
+                  <a
+                    href={`https://www.igu888.com/hangqing/${selectedStock}.html`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textDecoration: 'none', color: '#1890ff' }}
+                  >
+                    igu888
+                  </a>
+                </span>
+              ) : 'K LINE'}
               <Radio.Group 
                 value={timeRange} 
                 onChange={(e) => handleTimeRangeChange(e.target.value)}
@@ -1200,8 +1259,8 @@ const StockList: React.FC = () => {
                       fetchKLineData(selectedStock, parseInt(timeRange), kLineEndDate);
                     }
                   }}
-                  checkedChildren="显示最新"
-                  unCheckedChildren="查询日期"
+                  checkedChildren="Today"
+                  unCheckedChildren="Date"
                 />
               </div>
             </Space>
@@ -1275,13 +1334,8 @@ const StockList: React.FC = () => {
             value={selectedSkill}
             onChange={(value) => setSelectedSkill(value)}
             style={{ width: 200 }}
-          >
-            {skills.map(skill => (
-              <Select.Option key={skill.name} value={skill.name}>
-                {skill.description}
-              </Select.Option>
-            ))}
-          </Select>
+            options={skills.map(skill => ({ label: skill.description, value: skill.name }))}
+          />
         </div>
 
         {/* 对话历史区域 */}

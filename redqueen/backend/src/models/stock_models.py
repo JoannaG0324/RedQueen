@@ -5,7 +5,7 @@ from src.utils.database import Base
 
 
 class StockDailyQfq(Base):
-    """股票前复权日线行情表"""
+    """股票前复权日线行情表（原始备份，只读保留）"""
     __tablename__ = "stock_daily_qfq"
     
     id = Column(Integer, primary_key=True, index=True)
@@ -21,6 +21,27 @@ class StockDailyQfq(Base):
     change_rate = Column(Float)
     change_amount = Column(Float)
     turnover = Column(Float)
+    stock_name = Column(Text)
+
+
+class StockDailyAnalysis(Base):
+    """股票前复权日线行情表（最终使用量价数据，页面与计算默认读该表）"""
+    __tablename__ = "stock_daily_analysis"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_code = Column(Text)
+    date = Column(Date)
+    open = Column(Float)
+    close = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    amplitude = Column(Float)
+    change_rate = Column(Float)
+    change_amount = Column(Float)
+    turnover = Column(Float)
+    stock_name = Column(Text)
 
 
 class StockDailyQfqCalc(Base):

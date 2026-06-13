@@ -461,9 +461,7 @@ def process_stock_daily(start_page=1, end_page=None):
             'amplitude', 'high', 'low', 'open', 'pre_close', 'volume_ratio', 'turnover', 'pe_dynamic', 'pb'
         ]
     ]
-    
-    temp_df.to_csv('stock_daily_113_200.csv', index=False, encoding='utf-8-sig')
-    
+        
     drop_percent_columns = ['change_rate', 'turnover', 'amplitude']
     for col in drop_percent_columns:
         if col in temp_df.columns:

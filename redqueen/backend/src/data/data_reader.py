@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 
-from src.models.stock_models import StockDailyQfq, StockDailyQfqCalc, StockDailyFlow, StockInfo, IndustryThs, IndustryThsStock
+from src.models.stock_models import StockDailyQfq, StockDailyQfqCalc, StockDailyFlow, StockInfo, IndustryThs, IndustryThsStock, StockDailyAnalysis
 
 
 class DataReader:
@@ -14,13 +14,13 @@ class DataReader:
         self.db = db
     
     def get_stock_list(self) -> List[Dict[str, str]]:
-        """获取股票列表（优先从stock_daily_qfq获取最新名称）"""
+        """获取股票列表（优先从stock_daily_analysis获取最新名称）"""
         from sqlalchemy import text
         
-        # 从stock_daily_qfq表获取最新的股票名称
+        # 从stock_daily_analysis表获取最新的股票名称
         query = """
             SELECT stock_code, stock_name 
-            FROM stock_daily_qfq 
+            FROM stock_daily_analysis 
             WHERE stock_name IS NOT NULL AND stock_name != ''
             GROUP BY stock_code, stock_name
             ORDER BY MAX(date) DESC
@@ -34,7 +34,7 @@ class DataReader:
                 "stock_name": row.stock_name
             } for row in rows]
         else:
-            # 如果stock_daily_qfq表没有数据，从StockInfo表获取
+            # 如果stock_daily_analysis表没有数据，从StockInfo表获取
             stocks = self.db.query(StockInfo.stock_code, StockInfo.stock_name).all()
             return [{
                 "stock_code": stock.stock_code,
@@ -44,12 +44,12 @@ class DataReader:
     def get_stock_data_by_date(self, stock_code: str, target_date: date, days: int = 60) -> Optional[Dict[str, Any]]:
         """获取指定股票在指定日期的历史数据"""
         # 获取基础行情数据（从最早日期到target_date）
-        price_data = self.db.query(StockDailyQfq).filter(
+        price_data = self.db.query(StockDailyAnalysis).filter(
             and_(
-                StockDailyQfq.stock_code == stock_code,
-                StockDailyQfq.date <= target_date
+                StockDailyAnalysis.stock_code == stock_code,
+                StockDailyAnalysis.date <= target_date
             )
-        ).order_by(StockDailyQfq.date).all()
+        ).order_by(StockDailyAnalysis.date).all()
         
         if not price_data:
             return None
@@ -197,8 +197,8 @@ class DataReader:
     
     def is_trading_day(self, target_date: date) -> bool:
         """检查指定日期是否为交易日"""
-        # 查询 StockDailyQfq 表中是否有 target_date 的数据
-        count = self.db.query(StockDailyQfq).filter(StockDailyQfq.date == target_date).count()
+        # 查询 StockDailyAnalysis 表中是否有 target_date 的数据
+        count = self.db.query(StockDailyAnalysis).filter(StockDailyAnalysis.date == target_date).count()
         return count > 0
     
     def get_industry_data(self, target_date: date) -> List[Dict[str, Any]]:

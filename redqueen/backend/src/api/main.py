@@ -13,7 +13,7 @@ from src.utils.database import get_db, Base, engine
 # 导入所有模型类，确保创建数据库表时包含所有表结构
 from src.models.persistence_models import PersistenceManager, TaskStatus
 from src.models.rule_models import RuleManager, TriggeredRule
-from src.models.stock_models import StockDailyQfq, IndustryThs, IndustryThsStock, StockDailyQfqCalc
+from src.models.stock_models import StockDailyQfq, StockDailyAnalysis, IndustryThs, IndustryThsStock, StockDailyQfqCalc
 
 # 创建所有表（如果不存在）
 Base.metadata.create_all(bind=engine)
@@ -354,8 +354,8 @@ async def health_check():
 @app.get("/api/stock/latest-trading-day")
 async def get_latest_trading_day(db: Session = Depends(get_db)):
     """获取最新的交易日"""
-    # 查询 StockDailyQfq 表中最新的日期
-    latest_date = db.query(func.max(StockDailyQfq.date)).scalar()
+    # 查询 StockDailyAnalysis 表中最新的日期
+    latest_date = db.query(func.max(StockDailyAnalysis.date)).scalar()
     return {"date": latest_date.isoformat() if latest_date else date.today().isoformat()}
 
 
@@ -403,8 +403,8 @@ async def get_stock_list(target_date: str, industry: str = "", stock_codes: str 
                 ELSE NULL 
             END as volume_pct
         FROM stock_daily_qfq_calc sdqc 
-        LEFT JOIN stock_daily_qfq sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date 
-        LEFT JOIN stock_daily_qfq sd_prev ON sd_prev.stock_code = sdqc.stock_code AND sd_prev.date = '{prev_date_str}'
+        LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date 
+        LEFT JOIN stock_daily_analysis sd_prev ON sd_prev.stock_code = sdqc.stock_code AND sd_prev.date = '{prev_date_str}'
         LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code 
         LEFT JOIN industry_ths it ON it.industry_code = its.industry_code 
         WHERE {condition_str}
@@ -446,7 +446,7 @@ async def get_stock_kline(stock_code: str, days: int = 20, end_date: str = None,
         target_date = datetime.fromisoformat(end_date).date()
     else:
         # 否则使用最新的交易日
-        latest_trading_day = db.query(func.max(StockDailyQfq.date)).scalar()
+        latest_trading_day = db.query(func.max(StockDailyAnalysis.date)).scalar()
         if not latest_trading_day:
             return []
         target_date = latest_trading_day
@@ -630,11 +630,11 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 END as industry_change_pct
             FROM industry_ths it
             JOIN industry_ths_stock its ON it.industry_code = its.industry_code
-            LEFT JOIN stock_daily_qfq s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
-            LEFT JOIN stock_daily_qfq s2 ON its.stock_code = s2.stock_code AND s2.date = :date2
+            LEFT JOIN stock_daily_analysis s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
+            LEFT JOIN stock_daily_analysis s2 ON its.stock_code = s2.stock_code AND s2.date = :date2
             LEFT JOIN (
                 SELECT stock_code, stock_name 
-                FROM stock_daily_qfq 
+                FROM stock_daily_analysis 
                 WHERE date = :date2 
                 AND stock_name IS NOT NULL 
                 AND stock_name != ''
@@ -675,7 +675,7 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
 running_tasks = {}
 
 @app.post("/api/data/execute", response_model=Dict[str, Any])
-async def execute_data_task(task_id: str, page: str = "1", db: Session = Depends(get_db)):
+async def execute_data_task(task_id: str, page: str = "1", target_date: str = None, db: Session = Depends(get_db)):
     """执行数据获取任务"""
     try:
         # 记录任务开始
@@ -843,17 +843,213 @@ async def execute_data_task(task_id: str, page: str = "1", db: Session = Depends
         elif task_id == "daily_process_stock_indicators":
             # 导入calc_price模块
             from src.data.calc_price import daily_process_stock_indicators
-            
+
             # 执行任务
             print("开始执行daily_process_stock_indicators任务")
             daily_process_stock_indicators(max_workers=10)
-            
+
             # 构建任务结果
             result = {
                 "task_id": task_id,
                 "status": "completed",
                 "message": "个股量价指标计算完成",
                 "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "stock_daily_calc_update_incremental":
+            # 导入calc_hl_mid模块：个股补充指标（滚动高低点-增量）
+            from src.data.calc_hl_mid import run_incremental
+
+            # 执行任务
+            print("开始执行stock_daily_calc_update_incremental（个股补充指标-增量）任务")
+            stats = run_incremental(batch_size=200)
+
+            hit = stats.get("hit", {}) or {}
+            inc = stats.get("incremental", {}) or {}
+
+            message = (
+                f"个股补充指标（滚动高低点 20/60/90/120D）计算完成，"
+                f"总写入 {stats.get('rows_written', 0)} 行，"
+                f"总覆盖股票 {stats.get('stocks', 0)} 只，"
+                f"区间 {stats.get('start_date', '')} ~ {stats.get('end_date', '')}"
+            )
+            detail = (
+                f"【跳空命中-全量重算】"
+                f" {hit.get('stocks', 0)} 只股票，写入 {hit.get('rows_written', 0)} 行；"
+                f"【未命中-增量更新】"
+                f" {inc.get('stocks', 0)} 只股票，写入 {inc.get('rows_written', 0)} 行"
+            )
+
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": message,
+                "detail": detail,
+                "execution_time": datetime.now().isoformat(),
+                "stats": stats,
+            }
+        elif task_id == "industry_ths_index_calc_update_incremental":
+            # 导入calc_hl_mid_industry模块：行业补充指标（滚动高低点-增量）
+            from src.data.calc_hl_mid_industry import run_incremental
+
+            # 执行任务
+            print("开始执行industry_ths_index_calc_update_incremental（行业补充指标-增量）任务")
+            stats = run_incremental(batch_size=50)
+
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": (
+                    "行业补充指标（滚动高低点 20/60/90/120D）计算完成，"
+                    f"写入 {stats.get('rows_written', 0)} 行，"
+                    f"覆盖行业 {stats.get('industries', 0)} 个，"
+                    f"区间 {stats.get('start_date', '')} ~ {stats.get('end_date', '')}"
+                ),
+                "execution_time": datetime.now().isoformat(),
+                "stats": stats,
+            }
+        elif task_id == "init_qfq_mark_scan_incremental":
+            # 导入init_qfq_mark_scan模块：前复权扫描（增量版）
+            from src.data.init_qfq_mark_scan import run_incremental
+
+            # 执行任务
+            print("开始执行init_qfq_mark_scan_incremental（前复权增量扫描）任务")
+            stats = run_incremental(batch_size=500)
+
+            message = (
+                f"stock_qfq_mark 增量扫描完成，"
+                f"扫描 {stats.get('total_stocks', 0)} 只股票，"
+                f"本轮标记 {stats.get('marked_stocks', 0)} 只，"
+                f"最新交易日 {stats.get('latest_trade_day', '')}"
+            )
+
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": message,
+                "execution_time": datetime.now().isoformat(),
+                "stats": stats,
+            }
+        elif task_id == "fetch_kline_to_analysis":
+            # 导入fetch_kline_to_analysis模块：前复权K线覆盖写入
+            from src.data.fetch_kline_to_analysis import run_loop
+
+            # 执行任务
+            print("开始执行fetch_kline_to_analysis（前复权K线覆盖更新）任务")
+            stats = run_loop(market=None, lmt=500)
+
+            message = (
+                f"前复权 K 线覆盖更新完成，"
+                f"共 {stats.get('total', 0)} 只股票，"
+                f"成功 {stats.get('succeeded', 0)} 只，"
+                f"失败 {stats.get('failed', 0)} 只，"
+                f"总耗时 {round(stats.get('elapsed_sec', 0), 1)}s"
+            )
+
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed",
+                "message": message,
+                "execution_time": datetime.now().isoformat(),
+                "stats": stats,
+            }
+        elif task_id == "duplicate_check":
+            # 数据重复扫描：对 stock_daily_qfq_new 查询 (stock_code, date) 重复项
+            from sqlalchemy import text as sql_text
+
+            # 优先使用传入的 target_date；未传入则用表内最大日期
+            check_date = target_date
+            if check_date is None or str(check_date).strip() == "":
+                try:
+                    with db.begin():
+                        row = db.execute(
+                            sql_text("SELECT MAX(date) FROM stock_daily_qfq_new")
+                        ).scalar()
+                    if row is not None:
+                        check_date = str(row)
+                    else:
+                        check_date = datetime.now().strftime("%Y-%m-%d")
+                except Exception:
+                    check_date = datetime.now().strftime("%Y-%m-%d")
+
+            print(f"开始执行 duplicate_check（数据重复扫描）任务，日期 = {check_date}")
+
+            sql = sql_text("""
+                SELECT
+                    CASE WHEN id % 20 = 0 THEN 0 ELSE id % 20 END AS FLAG,
+                    CEIL(id / 20) AS PAGE,
+                    CONCAT(
+                        'id>', id - (CASE WHEN id % 20 = 0 THEN 20 ELSE id % 20 END),
+                        ' and id<=', 20 * FLOOR((id + 19) / 20)
+                    ) AS `ID_conditions`,
+                    temp.*
+                FROM (
+                    SELECT
+                        *,
+                        COUNT(*) OVER (PARTITION BY stock_code, date) AS repeat_cnt
+                    FROM stock_daily_qfq_new
+                    WHERE date = :check_date
+                ) temp
+                WHERE repeat_cnt > 1
+                ORDER BY FLAG
+            """)
+
+            try:
+                with db.begin():
+                    rows = db.execute(sql, {"check_date": check_date}).mappings().all()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"数据重复扫描执行失败: {str(e)}"
+                )
+
+            rows_list = [dict(r) for r in rows]
+            total_dupes = len(rows_list)
+
+            if total_dupes == 0:
+                message = f"日期 {check_date}：未检测到重复数据"
+                status_val = "completed"
+            else:
+                # 统计涉及多少组 (stock_code, date) 组合
+                unique_keys = set()
+                for r in rows_list:
+                    key = (str(r.get("stock_code", "")), str(r.get("date", "")))
+                    unique_keys.add(key)
+                sample_preview = rows_list[:5]  # 附带前 5 行用于排查
+                message = (
+                    f"日期 {check_date}：发现 {total_dupes} 条重复记录，"
+                    f"涉及 {len(unique_keys)} 组 (stock_code, date) 组合【存在异常数据】"
+                )
+                status_val = "completed"
+
+                # 构建任务结果（附带详细数据用于前端展示）
+                result = {
+                    "task_id": task_id,
+                    "status": status_val,
+                    "message": message,
+                    "check_date": check_date,
+                    "total_dupes": total_dupes,
+                    "affected_groups": len(unique_keys),
+                    "sample": sample_preview,
+                    "execution_time": datetime.now().isoformat(),
+                }
+                # 提前返回，跳过下方统一的 result 构建
+                if task_id in running_tasks:
+                    del running_tasks[task_id]
+                return result
+
+            # 无重复数据的路径（复用原有 result 模式）
+            result = {
+                "task_id": task_id,
+                "status": status_val,
+                "message": message,
+                "check_date": check_date,
+                "total_dupes": 0,
+                "affected_groups": 0,
+                "execution_time": datetime.now().isoformat(),
             }
         else:
             # 模拟执行其他任务

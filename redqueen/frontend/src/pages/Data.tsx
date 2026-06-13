@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Checkbox, Button, Typography, Space, Alert, Card, Modal, Radio } from 'antd';
 import { LoadingOutlined } from '@ant-design/icons';
-import { api, triggerScan, getScanStatus } from '../api/api';
+import { api } from '../api/api';
 
 const { Title, Text } = Typography;
 
@@ -20,40 +20,40 @@ const Data: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([
     {
       id: 'update_industry_flow_data',
-      name: '更新行业板块资金流向数据(AK)',
-      description: '更新行业板块的资金流向数据，包括净流入、成交量等',
+      name: '行业资金流向数据(AK)',
+      description: '更新行资金流向数据，包括净流入、成交量等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
       id: 'update_stock_flow',
-      name: '更新股票资金流数据(AK)',
-      description: '更新股票的资金流数据，包括流入资金、流出资金、净额等',
+      name: '个股资金流数据(AK)',
+      description: '更新个股的资金流数据，包括流入资金、流出资金、净额等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
       id: 'update_stock_ztb_data',
-      name: '更新股票涨停板数据(AK)',
-      description: '更新股票的涨停板数据，包括封板资金、首次封板时间等',
+      name: '个股涨停板数据(AK)',
+      description: '更新个股的涨停板数据，包括封板资金、首次封板时间等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
       id: 'update_stock_spot_data',
-      name: '更新股票实时数据(AK)',
-      description: '更新股票的实时数据，包括最新价、涨跌幅、成交量等',
+      name: '个股价量(AK)',
+      description: '更新个股的实时数据，包括最新价、涨跌幅、成交量等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
       id: 'update_stock_daily_backup',
-      name: '更新股票实时数据(Browser)',
-      description: '更新股票的每日交易数据，包括开盘价、收盘价、成交量等',
+      name: '-- --> 个股价量数据(Browser)',
+      description: '个股的每日交易数据，包括开盘价、收盘价、成交量等',
       isSelected: false,
       status: 'idle',
       result: '',
@@ -61,51 +61,83 @@ const Data: React.FC = () => {
     },
     {
       id: 'update_industry_ths_index_daily',
-      name: '更新行业板块日数据(Browser)',
-      description: '更新行业板块的日数据，包括开盘价、收盘价、成交量等',
+      name: '行业日价量数据(Browser)',
+      description: '更新行业的日数据，包括开盘价、收盘价、成交量等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
+      id: 'init_qfq_mark_scan_incremental',
+      name: '前复权扫描(增量)',
+      description: '对 stock_daily_qfq 全部个股的最新日 vs 前一日做一次跳空/除权判定，写入 stock_qfq_mark',
+      isSelected: false,
+      status: 'idle',
+      result: ''
+    },
+    {
+      id: 'fetch_kline_to_analysis',
+      name: '-- --> 前复权更新',
+      description: '从EM拉取 stock_qfq_mark 中被标记股票的前复权日线，覆盖写入 stock_daily_analysis',
+      isSelected: false,
+      status: 'idle',
+      result: ''
+    },
+    {
+      id: 'duplicate_check',
+      name: '数据重复扫描',
+      description: '查询 stock_daily_qfq_new 中 (stock_code, date) 重复记录',
+      isSelected: false,
+      status: 'idle',
+      result: '',
+      requiresDate: true // 需要日期选择
+    },
+    {
       id: 'industry_flow_calc',
-      name: '计算：行业板块资金流',
-      description: '计算行业板块的资金流指标，包括3天/5天/10天/20天的移动平均值',
+      name: '行业资金流指标',
+      description: '计算行业的的资金流指标，包括3天/5天/10天/20天的移动平均值',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
       id: 'daily_process_industry_indicators',
-      name: '计算：行业基础量价指标',
+      name: '行业基础量价指标',
       description: '计算行业的基础量价指标，包括移动平均线、ATR等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
+      id: 'industry_ths_index_calc_update_incremental',
+      name: '-- --> 行业补充指标',
+      description: '增量计算行业滚动高低点（20/60/90/120D 基于 (high+low)/2 的极值点），写入 industry_ths_index_calc_update',
+      isSelected: false,
+      status: 'idle',
+      result: ''
+    },
+    {
       id: 'daily_process_stock_indicators',
-      name: '计算：个股量价指标',
+      name: '个股量价指标',
       description: '计算个股的量价指标，包括移动平均线、ATR、持续增长天数等',
       isSelected: false,
       status: 'idle',
       result: ''
     },
     {
-      id: 'anomaly_scan',
-      name: '计算：异动扫描',
-      description: '执行异动扫描任务，识别符合异动规则的股票',
+      id: 'stock_daily_calc_update_incremental',
+      name: '-- --> 个股补充指标',
+      description: '增量计算个股滚动高低点（20/60/90/120D 基于 (high+low)/2 的极值点），写入 stock_daily_calc_update',
       isSelected: false,
       status: 'idle',
-      result: '',
-      requiresDate: true // 需要日期选择
-    }
+      result: ''
+    },
   ]);
 
   // 按类型选择状态
   const [dataUpdateSelected, setDataUpdateSelected] = useState(false);
   const [calcTasksSelected, setCalcTasksSelected] = useState(false);
-  const [otherTasksSelected, setOtherTasksSelected] = useState(false);
+  const [dataCheckTasksSelected, setDataCheckTasksSelected] = useState(false);
 
   const [isExecuting, setIsExecuting] = useState(false);
   const [pageModalVisible, setPageModalVisible] = useState(false);
@@ -134,7 +166,7 @@ const Data: React.FC = () => {
         // 数据更新任务：任务1-6
         const dataUpdateTaskIds = [
           'update_industry_flow_data',
-          'update_stock_flow',
+          'update_stock_flow_data',
           'update_stock_ztb_data',
           'update_stock_spot_data',
           'update_stock_daily_backup',
@@ -157,7 +189,9 @@ const Data: React.FC = () => {
         const calcTaskIds = [
           'industry_flow_calc',
           'daily_process_industry_indicators',
-          'daily_process_stock_indicators'
+          'daily_process_stock_indicators',
+          'stock_daily_calc_update_incremental',
+          'industry_ths_index_calc_update_incremental'
         ];
         if (calcTaskIds.includes(task.id)) {
           return { ...task, isSelected: newCalcTasksSelected };
@@ -167,15 +201,19 @@ const Data: React.FC = () => {
     );
   };
 
-  const handleOtherTasksToggle = () => {
-    const newOtherTasksSelected = !otherTasksSelected;
-    setOtherTasksSelected(newOtherTasksSelected);
+  const handleDataCheckTasksToggle = () => {
+    const newDataCheckTasksSelected = !dataCheckTasksSelected;
+    setDataCheckTasksSelected(newDataCheckTasksSelected);
     setTasks(prevTasks =>
       prevTasks.map(task => {
-        // 其他计算任务
-        const otherTaskIds = ['anomaly_scan'];
-        if (otherTaskIds.includes(task.id)) {
-          return { ...task, isSelected: newOtherTasksSelected };
+        // 数据检查任务
+        const dataCheckTaskIds = [
+          'init_qfq_mark_scan_incremental',
+          'fetch_kline_to_analysis',
+          'duplicate_check'
+        ];
+        if (dataCheckTaskIds.includes(task.id)) {
+          return { ...task, isSelected: newDataCheckTasksSelected };
         }
         return task;
       })
@@ -229,41 +267,17 @@ const Data: React.FC = () => {
         let result;
         let taskStatus: 'completed' | 'failed' = 'completed';
 
-        // 异动扫描任务使用专门的扫描API
-        if (task.id === 'anomaly_scan') {
-          // 触发扫描
-          const scanResult = await triggerScan(targetDate);
-          const scanTaskId = scanResult.task_id;
-          
-          // 先获取一次状态
-          let scanStatus = await getScanStatus(scanTaskId);
-          
-          // 轮询扫描状态，直到完成或失败
-          while (scanStatus && scanStatus.status !== 'completed' && scanStatus.status !== 'failed' && scanStatus.status !== 'COMPLETED' && scanStatus.status !== 'FAILED') {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            scanStatus = await getScanStatus(scanTaskId);
+        // 所有任务使用通用的执行API
+        response = await api.post('/data/execute', null, {
+          params: {
+            task_id: task.id,
+            page: task.id === 'update_stock_daily_backup' ? page : undefined,
+            target_date: task.id === 'duplicate_check' ? targetDate : undefined
           }
+        });
 
-          if (scanStatus && (scanStatus.status === 'completed' || scanStatus.status === 'COMPLETED')) {
-            result = `任务 ${task.name} 执行完成\n执行时间: ${new Date().toLocaleString()}\n状态: completed\n扫描日期: ${targetDate}\n扫描结果: 已识别异动股票`;
-            taskStatus = 'completed';
-          } else {
-            result = `任务 ${task.name} 执行失败\n执行时间: ${new Date().toLocaleString()}\n状态: failed\n错误信息: ${scanStatus?.message || '扫描任务失败'}`;
-            taskStatus = 'failed';
-          }
-        } else {
-          // 其他任务使用通用的执行API
-          response = await api.post('/data/execute', null, {
-            params: {
-              task_id: task.id,
-              page: task.id === 'update_stock_daily_backup' ? page : undefined,
-              target_date: task.id === 'anomaly_scan' ? targetDate : undefined
-            }
-          });
-
-          result = `任务 ${task.name} 执行完成\n执行时间: ${new Date().toLocaleString()}\n状态: ${response.data.status}\n消息: ${response.data.message}`;
-          taskStatus = response.data.status === 'completed' ? 'completed' : 'failed';
-        }
+        result = `任务 ${task.name} 执行完成\n执行时间: ${new Date().toLocaleString()}\n状态: ${response.data.status}\n消息: ${response.data.message}`;
+        taskStatus = response.data.status === 'completed' ? 'completed' : 'failed';
 
         // 更新任务状态和结果
         setTasks(prevTasks =>
@@ -397,7 +411,7 @@ const Data: React.FC = () => {
             'update_stock_daily_backup',
             'update_industry_ths_index_daily'
           ].includes(task.id)).map(task => (
-            <div key={task.id} style={{ marginBottom: '16px' }}>
+            <div key={task.id} style={{ marginBottom: '16px', paddingLeft: '32px' }}>
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
                 <Checkbox
                   checked={task.isSelected}
@@ -417,12 +431,56 @@ const Data: React.FC = () => {
                     </div>
                   }
                   type={task.status === 'completed' ? 'success' : 'error'}
-                  style={{ marginLeft: '32px', marginTop: '8px' }}
+                  style={{ marginLeft: '0px', marginTop: '8px' }}
                 />
               )}
             </div>
           ))}
           
+          {/* 数据检查任务 */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
+            <Checkbox
+              checked={dataCheckTasksSelected}
+              onChange={handleDataCheckTasksToggle}
+            />
+            <Space style={{ marginLeft: '8px' }}>
+              <Text strong>-- 数据检查任务 --</Text>
+              <Text type="secondary">选择全部数据检查任务</Text>
+            </Space>
+          </div>
+
+          {/* 数据检查任务列表 */}
+          {tasks.filter(task => [
+            'init_qfq_mark_scan_incremental',
+            'fetch_kline_to_analysis',
+            'duplicate_check'
+          ].includes(task.id)).map(task => (
+            <div key={task.id} style={{ marginBottom: '16px', paddingLeft: '32px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                <Checkbox
+                  checked={task.isSelected}
+                  onChange={() => handleTaskToggle(task.id)}
+                />
+                <Space style={{ marginLeft: '8px' }}>
+                  <Text strong>{task.name}</Text>
+                  <Text type="secondary">{task.description}</Text>
+                  {getStatusIcon(task.status)}
+                </Space>
+              </div>
+              {task.result && (
+                <Alert
+                  description={
+                    <div style={{ color: task.status === 'completed' ? '' : '#ff4d4f' }}>
+                      {task.result}
+                    </div>
+                  }
+                  type={task.status === 'completed' ? 'success' : 'error'}
+                  style={{ marginLeft: '0px', marginTop: '8px' }}
+                />
+              )}
+            </div>
+          ))}
+
           {/* 计算任务 */}
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
             <Checkbox
@@ -439,9 +497,11 @@ const Data: React.FC = () => {
           {tasks.filter(task => [
             'industry_flow_calc',
             'daily_process_industry_indicators',
-            'daily_process_stock_indicators'
+            'daily_process_stock_indicators',
+            'stock_daily_calc_update_incremental',
+            'industry_ths_index_calc_update_incremental'
           ].includes(task.id)).map(task => (
-            <div key={task.id} style={{ marginBottom: '16px' }}>
+            <div key={task.id} style={{ marginBottom: '16px', paddingLeft: '32px' }}>
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
                 <Checkbox
                   checked={task.isSelected}
@@ -461,49 +521,7 @@ const Data: React.FC = () => {
                     </div>
                   }
                   type={task.status === 'completed' ? 'success' : 'error'}
-                  style={{ marginLeft: '32px', marginTop: '8px' }}
-                />
-              )}
-            </div>
-          ))}
-          
-          {/* 其他计算任务 */}
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
-            <Checkbox
-              checked={otherTasksSelected}
-              onChange={handleOtherTasksToggle}
-            />
-            <Space style={{ marginLeft: '8px' }}>
-              <Text strong>-- 其他计算任务 --</Text>
-              <Text type="secondary">选择全部其他计算任务</Text>
-            </Space>
-          </div>
-          
-          {/* 其他计算任务列表 */}
-          {tasks.filter(task => [
-            'anomaly_scan'
-          ].includes(task.id)).map(task => (
-            <div key={task.id} style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-                <Checkbox
-                  checked={task.isSelected}
-                  onChange={() => handleTaskToggle(task.id)}
-                />
-                <Space style={{ marginLeft: '8px' }}>
-                  <Text strong>{task.name}</Text>
-                  <Text type="secondary">{task.description}</Text>
-                  {getStatusIcon(task.status)}
-                </Space>
-              </div>
-              {task.result && (
-                <Alert
-                  description={
-                    <div style={{ color: task.status === 'completed' ? '' : '#ff4d4f' }}>
-                      {task.result}
-                    </div>
-                  }
-                  type={task.status === 'completed' ? 'success' : 'error'}
-                  style={{ marginLeft: '32px', marginTop: '8px' }}
+                  style={{ marginLeft: '0 px', marginTop: '8px' }}
                 />
               )}
             </div>
