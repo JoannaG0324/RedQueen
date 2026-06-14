@@ -175,6 +175,7 @@ const StockList: React.FC = () => {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
   const kLineRequestId = useRef<number>(0);
+  const kLineEndDateRef = useRef<string>('');
 
   // 收藏相关状态
   const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
@@ -610,6 +611,24 @@ const StockList: React.FC = () => {
             color0: '#11c26d',
             borderColor: '#ef232a',
             borderColor0: '#11c26d'
+          },
+          markLine: {
+            symbol: 'none',
+            silent: true,
+            lineStyle: {
+              type: 'dashed',
+              color: '#1890ff',
+              width: 1.2
+            },
+            label: {
+              formatter: (params: any) => `目标日：${params.name || ''}`,
+              color: '#1890ff'
+            },
+            data: (() => {
+              const markDate = kLineEndDateRef.current || selectedDate;
+              if (!markDate) return [];
+              return [{ xAxis: markDate, name: markDate }];
+            })()
           }
         },
         {
@@ -715,11 +734,18 @@ const StockList: React.FC = () => {
   };
 
   // 获取股票 K 线数据
-  const fetchKLineData = async (stockCode: string, _days: number = 20, endDate: string = selectedDate) => {
+  // markLineDate: 垂直辅助线的日期，与作图 endDate 解耦（Switch 切换不影响辅助线位置）
+  const fetchKLineData = async (
+    stockCode: string,
+    _days: number = 20,
+    endDate: string = selectedDate,
+    markLineDate: string = selectedDate,
+  ) => {
     // 总是获取所有可用数据，用于支持完整的缩放功能（传入的 days 仅作签名占位）
     const validDays = 9999; // 使用大值确保获取所有数据
     const myReqId = ++kLineRequestId.current;
-    console.log('Fetching K line data for:', stockCode, 'endDate:', endDate, 'reqId:', myReqId);
+    kLineEndDateRef.current = markLineDate;
+    console.log('Fetching K line data for:', stockCode, 'endDate:', endDate, 'markLineDate:', markLineDate, 'reqId:', myReqId);
     setKLineLoading(true);
     try {
       let data = await getStockKLineData(stockCode, validDays, endDate);
@@ -779,7 +805,7 @@ const StockList: React.FC = () => {
     };
   }, []);
 
-  // K 线数据变化时更新图表
+  // K 线数据变化或目标日变化时更新图表（markLine 依赖 selectedDate）
   useEffect(() => {
     if (Array.isArray(kLineData) && kLineData.length > 0) {
       const displayDays = timeRange === 'ALL' ? 365 : parseInt(timeRange);
@@ -788,10 +814,9 @@ const StockList: React.FC = () => {
       const endPercent = 100;
       renderKLineChart(kLineData, startPercent, endPercent);
     } else if (selectedStock) {
-      // 已选中股票但无数据，不要让旧图残留
       clearChart();
     }
-  }, [kLineData, timeRange, selectedStock]);
+  }, [kLineData, timeRange, selectedStock, selectedDate]);
 
   // 日期变化处理 - 重新拉取全量数据
   const handleDateChange = (date: any) => {
@@ -1344,6 +1369,12 @@ const StockList: React.FC = () => {
                   loading={loading}
                   pagination={{ pageSize: 20 }}
                   size="small"
+                  rowClassName={(record: any) =>
+                    record && record.stock_code === selectedStock ? 'ant-table-row-hover-selected' : ''
+                  }
+                  onRow={(record: any) => ({
+                    onClick: () => record && record.stock_code && handleStockSelect(record.stock_code)
+                  })}
                 />
               </div>
             </div>
@@ -1405,7 +1436,7 @@ const StockList: React.FC = () => {
                         chartInstance.current.clear();
                       }
                       const kLineEndDate = checked ? latestTradingDate : selectedDate;
-                      fetchKLineData(selectedStock, parseInt(timeRange), kLineEndDate);
+                      fetchKLineData(selectedStock, parseInt(timeRange), kLineEndDate, selectedDate);
                     }
                   }}
                   checkedChildren="Date"

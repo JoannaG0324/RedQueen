@@ -105,3 +105,14 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* Stock-list: 选中的表格行背景色与 hover 态一致 */
+.ant-table-row-hover-selected > td {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ant-table-row-hover-selected > td {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+  }
+}
