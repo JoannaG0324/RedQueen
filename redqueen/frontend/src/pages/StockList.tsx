@@ -432,16 +432,16 @@ const StockList: React.FC = () => {
             const close = klineData[2] || 0;
             const low = klineData[3] || 0;
             const high = klineData[4] || 0;
-            const changeRateValue = open !== 0 ? ((close - open) / open * 100) : 0;
+            const changeRateValue = typeof stockData.change_rate === 'number' ? stockData.change_rate : parseFloat(stockData.change_rate) || 0;
             const changeRate = changeRateValue.toFixed(2);
             const changeRateColor = changeRateValue >= 0 ? '#ef232a' : '#11c26d';
-            
+
             return `日期: ${name}<br/>
                    开盘: ${open.toFixed(2)}<br/>
                    收盘: ${close.toFixed(2)}<br/>
                    最低: ${low.toFixed(2)}<br/>
                    最高: ${high.toFixed(2)}<br/>
-                   涨跌幅: <span style="color: ${changeRateColor}">${changeRate}%</span><br/>
+                   涨跌幅: <span style="color: ${changeRateColor}">${changeRateValue >= 0 ? '+' : ''}${changeRate}%</span><br/>
                    MA5: ${ma5} <br/>
                    MA10: ${ma10} <br/>
                    MA20: ${ma20} <br/>
@@ -829,6 +829,10 @@ const StockList: React.FC = () => {
 
       // 如果已经选择了股票，重新获取K线图数据，使用新的日期作为结束日期
       if (selectedStock) {
+        // 切换日期时先重置 K 线图状态，避免显示旧日期的数据
+        setKLineData([]);
+        clearChart();
+        setKLineLoading(true);
         fetchKLineData(selectedStock, parseInt(timeRange), newDate);
       }
     }

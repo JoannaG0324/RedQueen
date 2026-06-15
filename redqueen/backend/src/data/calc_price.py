@@ -122,43 +122,35 @@ def calculate_growth_streak(df):
 
     close_desc = close[::-1]
     pct_desc = pct[::-1]
-    prev_close_desc = prev_close[::-1]
 
     streak_days = np.zeros(n, dtype=float)
     streak_pct = np.zeros(n, dtype=float)
 
+    # pct_desc[j] 语义："第 j 近的交易日"相对"其前一日"的涨跌幅
+    # 连涨 = 从当前日 j=i 开始向历史方向（j 增大）遍历，直到遇到 pct_desc[j] <= 0 为止
+    # 连涨天数 = N，基准价 = close_desc[i + N]（连涨序列起点之前那一天的收盘价）
     for i in range(n):
-        if pd.isna(prev_close_desc[i]):
+        if pd.isna(close_desc[i]):
             continue
 
-        days_acc = 0.0
-        pct_acc = 0.0
-        start_prev_close = None
-
+        N = 0
         for j in range(i, n):
             pj = pct_desc[j]
-            if pd.isna(pj):
+            if pd.isna(pj) or pj < 0:
                 break
-
             if pj > 0:
-                days_acc += 1.0
-                if start_prev_close is None:
-                    start_prev_close = prev_close_desc[j]
-                if start_prev_close and start_prev_close != 0:
-                    pct_acc = (close_desc[i] / start_prev_close - 1) * 100.0
-                else:
-                    pct_acc = 0.0
-            elif pj == 0:
-                days_acc += 0.1
-                if start_prev_close is None:
-                    pct_acc = 0.0
-                elif start_prev_close != 0:
-                    pct_acc = (close_desc[i] / start_prev_close - 1) * 100.0
-            else:
-                break
+                N += 1
+            # pj == 0 视为平盘，不计入连涨天数，也不中断（继续向前看）
 
-        streak_days[i] = days_acc
-        streak_pct[i] = pct_acc
+        streak_days[i] = float(N)
+        if N > 0 and i + N < n:
+            base_price = close_desc[i + N]
+            if base_price and base_price != 0:
+                streak_pct[i] = (close_desc[i] / base_price - 1.0) * 100.0
+            else:
+                streak_pct[i] = 0.0
+        else:
+            streak_pct[i] = 0.0
 
     return {
         "growth_streak_days": _fill_none_list(streak_days),
