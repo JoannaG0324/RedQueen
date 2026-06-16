@@ -143,25 +143,25 @@ const Heatmap: React.FC = () => {
     let displayName: string;
 
     if (marketCapYi < 50) {
-      fontSize = 12;
+      fontSize = 11;
       displayName = pureName.substring(0, 4);
     } else if (marketCapYi < 200) {
-      fontSize = 13;
+      fontSize = 12;
       displayName = pureName;
     } else if (marketCapYi < 500) {
-      fontSize = 14;
+      fontSize = 13;
       displayName = pureName;
     } else if (marketCapYi < 1000) {
-      fontSize = 14;
+      fontSize = 13;
       displayName = name;
     } else if (marketCapYi < 3000) {
-      fontSize = 14;
+      fontSize = 13;
       displayName = name;
     } else if (marketCapYi < 5000) {
-      fontSize = 16;
+      fontSize = 14;
       displayName = name;
     } else {
-      fontSize = 22;
+      fontSize = 20;
       displayName = name;
     }
 

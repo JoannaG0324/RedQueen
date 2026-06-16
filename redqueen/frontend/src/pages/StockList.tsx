@@ -3,7 +3,7 @@ import { Button, Table, message, Space, Typography, Select, Input, Card, Radio, 
 import type { ColumnType } from 'antd/es/table';
 import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite } from '../api/api';
+import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite, getFavoriteOne } from '../api/api';
 
 const MARKET_OPTIONS = [
   { value: 'SH_60', label: 'SH_60', prefixes: ['60'] },
@@ -180,6 +180,7 @@ const StockList: React.FC = () => {
   // 收藏相关状态
   const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
   const [onlyFavorites, setOnlyFavorites] = useState<boolean>(false);
+  const [selectedStockFavoriteInfo, setSelectedStockFavoriteInfo] = useState<{ price_date: string | null; status: number } | null>(null);
 
   // 从后端加载收藏列表（组件首次挂载时）
   const loadFavorites = async () => {
@@ -226,6 +227,13 @@ const StockList: React.FC = () => {
           favoriteOnly: onlyFavorites,
           favStockCodes: next,
         }));
+      }
+      // 如果操作的是当前选中的股票，更新收藏信息
+      if (stockCode === selectedStock) {
+        setSelectedStockFavoriteInfo({
+          price_date: nextStatus === 1 ? payload.price_date || null : null,
+          status: nextStatus,
+        });
       }
     } catch (e: any) {
       console.error('更新收藏失败:', e);
@@ -455,13 +463,25 @@ const StockList: React.FC = () => {
         },
       legend: [
         {
-          data: ['K 线', 'MA5', 'MA10', 'MA20', 'MA60', '成交量'],
+          data: [
+            { name: 'K 线', itemStyle: { color: '#ef232a' } },
+            { name: 'MA5', itemStyle: { color: '#4874CB' } },
+            { name: 'MA10', itemStyle: { color: '#B68D01' } },
+            { name: 'MA20', itemStyle: { color: '#BD5AFF' } },
+            { name: 'MA60', itemStyle: { color: '#689EFF' } },
+            { name: '成交量', itemStyle: { color: '#ef232a' } }
+          ],
           top: 0,
           left: 0,
           align: 'left'
         },
         {
-          data: ['H20', 'H60', 'H120', 'L20'],
+          data: [
+            { name: 'H20', itemStyle: { color: '#ef232a' } },
+            { name: 'H60', itemStyle: { color: '#FF01FF' } },
+            { name: 'H120', itemStyle: { color: '#9d0208' } },
+            { name: 'L20', itemStyle: { color: '#0b140dff' } }
+          ],
           top: 5,
           right: 0,
           align: 'left'
@@ -480,8 +500,9 @@ const StockList: React.FC = () => {
           start: startPercent,
           end: endPercent,
           height: 20,
-          bottom: -5,
-          zoomLock: false
+          bottom: 5, 
+          zoomLock: false,
+          showDetail: true // 隐藏滑块文字，防止溢出
         }
       ],
       grid: [
@@ -489,13 +510,13 @@ const StockList: React.FC = () => {
           left: 80,
           right: 40,
           top: 45,
-          bottom: '35%',
+          bottom: '30%',
           containLabel: false
         },
         {
           left: 80,
           right: 40,
-          top: '65%',
+          top: '70%',
           bottom: 30,
           containLabel: false
         }
@@ -515,7 +536,7 @@ const StockList: React.FC = () => {
             show: false
           },
           axisLabel: {
-            show: false
+            show: true
           },
           splitLine: {
             show: false
@@ -536,10 +557,7 @@ const StockList: React.FC = () => {
             alignWithLabel: true
           },
           axisLabel: {
-            show: true,
-            color: '#333',
-            fontSize: 11,
-            align: 'center'
+            show: false
           },
           splitLine: {
             show: false
@@ -621,7 +639,7 @@ const StockList: React.FC = () => {
               width: 1.2
             },
             label: {
-              formatter: (params: any) => `目标日：${params.name || ''}`,
+              formatter: (params: any) => `${params.name || ''}`,
               color: '#1890ff'
             },
             data: (() => {
@@ -840,7 +858,7 @@ const StockList: React.FC = () => {
 
   // 行业变化处理 - 纯前端筛选
   const handleIndustryChange = (value: string | null) => {
-    const industry = value || '';
+    const industry = value ;
     setSelectedIndustry(industry);
     setFilteredStocks(applyFilters(stocks, {
       industry,
@@ -854,7 +872,7 @@ const StockList: React.FC = () => {
 
   // Sentiment 变化处理 - 纯前端筛选
   const handleSentimentChange = (value: string | null) => {
-    const sentiment = value || '';
+    const sentiment = value ;
     setSelectedSentiment(sentiment);
     setFilteredStocks(applyFilters(stocks, {
       industry: selectedIndustry,
@@ -955,13 +973,23 @@ const StockList: React.FC = () => {
   };
 
   // 股票选择处理 - 选新股票前先清空旧图并显示loading，避免"先坍缩再渲染"
-  const handleStockSelect = (stockCode: string) => {
+  const handleStockSelect = async (stockCode: string) => {
     console.log('Selected stock:', stockCode);
     setSelectedStock(stockCode);
     setKLineLoading(true);
     clearChart();
     const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
     fetchKLineData(stockCode, parseInt(timeRange), kLineEndDate);
+    try {
+      const favInfo = await getFavoriteOne(stockCode);
+      setSelectedStockFavoriteInfo({
+        price_date: favInfo.price_date,
+        status: favInfo.status,
+      });
+    } catch (e: any) {
+      console.error('获取收藏状态失败:', e);
+      setSelectedStockFavoriteInfo(null);
+    }
   };
 
   // 时间范围变化处理 - 切换周期前先清空旧图并显示loading，避免"先坍缩再渲染"
@@ -1121,7 +1149,7 @@ const StockList: React.FC = () => {
       title: 'Name',
       dataIndex: 'stock_name',
       key: 'stock_name',
-      width: 100,
+      minWidth: 100,
       align: 'center',
     },
     {
@@ -1130,6 +1158,11 @@ const StockList: React.FC = () => {
       key: 'industry',
       width: 150,
       align: 'center',
+      sorter: (a: any, b: any) => {
+        const strA = a.industry ?? '';
+        const strB = b.industry ?? '';
+        return strA.localeCompare(strB, 'zh-CN'); // 中文汉字按拼音排序
+      },      
       render: (text: any) => text || '未知',
     },
     {
@@ -1138,6 +1171,7 @@ const StockList: React.FC = () => {
       key: 'close',
       width: 100,
       align: 'right',
+      sorter: (a: any, b: any) => (a.close || 0) - (b.close || 0),
       render: (text: any) => typeof text === 'number' ? text.toFixed(2) : '0.00',
     },
     {
@@ -1269,7 +1303,7 @@ const StockList: React.FC = () => {
         />
         <Select
           placeholder="By Industry"
-          style={{ width: 200, marginRight: '12px' }}
+          style={{ width: 150, marginRight: '12px' }}
           value={selectedIndustry}
           onChange={handleIndustryChange}
           allowClear
@@ -1280,20 +1314,20 @@ const StockList: React.FC = () => {
           }
           options={industries.map(industry => ({ label: industry, value: industry }))}
         />
+         <Input
+          placeholder="By Name or Code"
+          style={{ width: 150, marginRight: '12px' }}
+          value={stockNameFilter}
+          onChange={(e) => handleStockNameFilterChange(e.target.value)}
+          allowClear
+        />
         <Select
           placeholder="By Sentiment"
-          style={{ width: 220, marginRight: '12px' }}
+          style={{ width: 150, marginRight: '12px' }}
           value={selectedSentiment}
           onChange={handleSentimentChange}
           allowClear
           options={SENTIMENT_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
-        />
-         <Input
-          placeholder="By Name or Code"
-          style={{ width: 220, marginRight: '12px' }}
-          value={stockNameFilter}
-          onChange={(e) => handleStockNameFilterChange(e.target.value)}
-          allowClear
         />
         {aiApplied && (
           <div style={{ position: 'relative', display: 'inline-block', marginRight: '12px' }}>
@@ -1449,7 +1483,7 @@ const StockList: React.FC = () => {
               </div>
             </Space>
           }>
-            <div style={{ flex: 1, width: '100%', minHeight: '500px' }}>
+            <div style={{ flex: 1, width: '100%', minHeight: '600px' }}>
               {selectedStock ? (
                 <Spin
                   spinning={kLineLoading}
@@ -1462,7 +1496,14 @@ const StockList: React.FC = () => {
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Text>请选择一只股票查看 K 线图</Text>
                 </div>
-              )}
+              )}  
+              {selectedStock && selectedStockFavoriteInfo && selectedStockFavoriteInfo.status === 1 && selectedStockFavoriteInfo.price_date && (
+              <div style={{  paddingTop: '10px', paddingLeft: '80px'}}>
+                <Text style={{ fontSize: '14px', color: '#1890ff', fontWeight: 'bold' }}>
+                  Focus on {selectedStockFavoriteInfo.price_date}
+                </Text>
+              </div>
+            )}
             </div>
           </Card>
         </div>

@@ -14,6 +14,7 @@ interface Task {
   result: string;
   requiresPage?: boolean; // 是否需要页码选择
   requiresDate?: boolean; // 是否需要日期选择
+  requiresDataSource?: boolean; // 是否需要数据源选择
 }
 
 const Data: React.FC = () => {
@@ -27,7 +28,7 @@ const Data: React.FC = () => {
       result: ''
     },
     {
-      id: 'update_stock_flow',
+      id: 'update_stock_flow_data',
       name: '个股资金流数据(AK)',
       description: '更新个股的资金流数据，包括流入资金、流出资金、净额等',
       isSelected: false,
@@ -68,8 +69,17 @@ const Data: React.FC = () => {
       result: ''
     },
     {
+      id: 'duplicate_check',
+      name: '【数据重复】扫描',
+      description: '查询 stock_daily_qfq_new 中 (stock_code, date) 重复记录',
+      isSelected: false,
+      status: 'idle',
+      result: '',
+      requiresDate: true // 需要日期选择
+    },
+    {
       id: 'init_qfq_mark_scan_incremental',
-      name: '前复权扫描(增量)',
+      name: '【前复权数据】扫描(增量)',
       description: '对 stock_daily_qfq 全部个股的最新日 vs 前一日做一次跳空/除权判定，写入 stock_qfq_mark',
       isSelected: false,
       status: 'idle',
@@ -78,19 +88,11 @@ const Data: React.FC = () => {
     {
       id: 'fetch_kline_to_analysis',
       name: '-- --> 前复权更新',
-      description: '从EM拉取 stock_qfq_mark 中被标记股票的前复权日线，覆盖写入 stock_daily_analysis',
-      isSelected: false,
-      status: 'idle',
-      result: ''
-    },
-    {
-      id: 'duplicate_check',
-      name: '数据重复扫描',
-      description: '查询 stock_daily_qfq_new 中 (stock_code, date) 重复记录',
+      description: '拉取 stock_qfq_mark 中被标记股票的前复权日线，覆盖写入 stock_daily_analysis',
       isSelected: false,
       status: 'idle',
       result: '',
-      requiresDate: true // 需要日期选择
+      requiresDataSource: true
     },
     {
       id: 'industry_flow_calc',
@@ -149,6 +151,8 @@ const Data: React.FC = () => {
   const [isStopping, setIsStopping] = useState(false);
   const [dateModalVisible, setDateModalVisible] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [dataSourceModalVisible, setDataSourceModalVisible] = useState(false);
+  const [selectedDataSource, setSelectedDataSource] = useState<string>('eastmoney');
 
   const handleTaskToggle = (taskId: string) => {
     setTasks(prevTasks =>
@@ -208,9 +212,9 @@ const Data: React.FC = () => {
       prevTasks.map(task => {
         // 数据检查任务
         const dataCheckTaskIds = [
+          'duplicate_check',
           'init_qfq_mark_scan_incremental',
-          'fetch_kline_to_analysis',
-          'duplicate_check'
+          'fetch_kline_to_analysis'
         ];
         if (dataCheckTaskIds.includes(task.id)) {
           return { ...task, isSelected: newDataCheckTasksSelected };
@@ -244,11 +248,20 @@ const Data: React.FC = () => {
       return;
     }
 
+    // 检查是否有任务需要数据源选择
+    const taskRequiringDataSource = selectedTasks.find(task => task.requiresDataSource);
+    if (taskRequiringDataSource) {
+      // 显示数据源选择弹窗
+      setSelectedTaskId(taskRequiringDataSource.id);
+      setDataSourceModalVisible(true);
+      return;
+    }
+
     // 执行不需要额外参数的任务
     executeTasks(selectedTasks);
   };
 
-  const executeTasks = async (tasksToExecute: Task[], page?: string, targetDate?: string) => {
+  const executeTasks = async (tasksToExecute: Task[], page?: string, targetDate?: string, dataSource?: string) => {
     setIsExecuting(true);
 
     // 更新任务状态为运行中
@@ -272,7 +285,8 @@ const Data: React.FC = () => {
           params: {
             task_id: task.id,
             page: task.id === 'update_stock_daily_backup' ? page : undefined,
-            target_date: task.id === 'duplicate_check' ? targetDate : undefined
+            target_date: task.id === 'duplicate_check' ? targetDate : undefined,
+            data_source: task.id === 'fetch_kline_to_analysis' ? dataSource : undefined
           }
         });
 
@@ -318,6 +332,12 @@ const Data: React.FC = () => {
     setDateModalVisible(false);
     // 执行选中的任务，并传递日期参数
     executeTasks(tasks.filter(task => task.isSelected), undefined, selectedDate);
+  };
+
+  const handleDataSourceSelect = () => {
+    setDataSourceModalVisible(false);
+    // 执行选中的任务，并传递数据源参数
+    executeTasks(tasks.filter(task => task.isSelected), undefined, undefined, selectedDataSource);
   };
 
   const handleStopTasks = async () => {
@@ -405,7 +425,7 @@ const Data: React.FC = () => {
           {/* 数据更新任务列表 */}
           {tasks.filter(task => [
             'update_industry_flow_data',
-            'update_stock_flow',
+            'update_stock_flow_data',
             'update_stock_ztb_data',
             'update_stock_spot_data',
             'update_stock_daily_backup',
@@ -451,9 +471,9 @@ const Data: React.FC = () => {
 
           {/* 数据检查任务列表 */}
           {tasks.filter(task => [
+            'duplicate_check',
             'init_qfq_mark_scan_incremental',
-            'fetch_kline_to_analysis',
-            'duplicate_check'
+            'fetch_kline_to_analysis'
           ].includes(task.id)).map(task => (
             <div key={task.id} style={{ marginBottom: '16px', paddingLeft: '32px' }}>
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
@@ -614,6 +634,31 @@ const Data: React.FC = () => {
         />
         <p style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
           提示：请选择有效的交易日
+        </p>
+      </Modal>
+
+      {/* 数据源选择弹窗 */}
+      <Modal
+        title="选择数据源"
+        open={dataSourceModalVisible}
+        onOk={handleDataSourceSelect}
+        onCancel={() => {
+          setDataSourceModalVisible(false);
+        }}
+        okText="确定"
+        cancelText="取消"
+      >
+        <p>请选择前复权更新的数据源：</p>
+        <Radio.Group
+          value={selectedDataSource}
+          onChange={e => setSelectedDataSource(e.target.value)}
+          style={{ marginTop: 16 }}
+        >
+          <Radio value="eastmoney">东方财富</Radio><br />
+          <Radio value="xueqiu">雪球</Radio>
+        </Radio.Group>
+        <p style={{ fontSize: 12, color: '#999', marginTop: 16 }}>
+          提示：选择后将从指定数据源拉取数据，不再自动切换备用源
         </p>
       </Modal>
     </div>

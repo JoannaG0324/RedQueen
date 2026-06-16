@@ -385,10 +385,25 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
 
     condition_str = " AND ".join(conditions)
 
-    # 计算前一日日期
+    # 计算"前一日"（前一交易日，即表中小于 target_date 的最大 date）
+    # 注意：不再用自然日减 1，否则周一/节假日会命中空数据
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    prev_date_obj = target_date_obj - timedelta(days=1)
-    prev_date_str = prev_date_obj.isoformat()
+    prev_trading_day = db.execute(
+        text(
+            "SELECT MAX(date) FROM stock_daily_qfq_calc WHERE date < :td"
+        ),
+        {"td": target_date_obj},
+    ).scalar()
+
+    if prev_trading_day is None:
+        # 兜底：若数据库里没有更早的记录，仍然用 target_date 自身，
+        # 避免用"自然日减 1"去 join 到空值
+        prev_trading_day = target_date_obj
+
+    if isinstance(prev_trading_day, date):
+        prev_date_str = prev_trading_day.isoformat()
+    else:
+        prev_date_str = date.fromisoformat(str(prev_trading_day)).isoformat()
 
     # 构建 SQL 查询 - 包含前一日成交量和计算指标
     query = f"""
@@ -687,7 +702,7 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
 running_tasks = {}
 
 @app.post("/api/data/execute", response_model=Dict[str, Any])
-async def execute_data_task(task_id: str, page: str = "1", target_date: str = None, db: Session = Depends(get_db)):
+async def execute_data_task(task_id: str, page: str = "1", target_date: str = None, data_source: str = "eastmoney", db: Session = Depends(get_db)):
     """执行数据获取任务"""
     try:
         # 记录任务开始
@@ -762,13 +777,13 @@ async def execute_data_task(task_id: str, page: str = "1", target_date: str = No
                 "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
                 "execution_time": datetime.now().isoformat()
             }
-        elif task_id == "update_stock_flow":
+        elif task_id == "update_stock_flow_data":
             # 导入update模块
-            from src.data.update import update_stock_flow
+            from src.data.update import update_stock_flow_data
             
             # 执行任务
-            print("开始执行update_stock_flow任务")
-            result = update_stock_flow()
+            print("开始执行update_stock_flow_data任务")
+            result = update_stock_flow_data()
             
             # 构建任务结果
             result = {
@@ -950,24 +965,34 @@ async def execute_data_task(task_id: str, page: str = "1", target_date: str = No
 
             # 执行任务
             print("开始执行fetch_kline_to_analysis（前复权K线覆盖更新）任务")
-            stats = run_loop(market=None, lmt=500)
-
-            message = (
-                f"前复权 K 线覆盖更新完成，"
-                f"共 {stats.get('total', 0)} 只股票，"
-                f"成功 {stats.get('succeeded', 0)} 只，"
-                f"失败 {stats.get('failed', 0)} 只，"
-                f"总耗时 {round(stats.get('elapsed_sec', 0), 1)}s"
-            )
-
-            # 构建任务结果
-            result = {
-                "task_id": task_id,
-                "status": "completed",
-                "message": message,
-                "execution_time": datetime.now().isoformat(),
-                "stats": stats,
-            }
+            try:
+                stats = run_loop(market=None, lmt=500, data_source=data_source)
+                message = (
+                    f"前复权 K 线覆盖更新完成，"
+                    f"共 {stats.get('total', 0)} 只股票，"
+                    f"成功 {stats.get('succeeded', 0)} 只，"
+                    f"失败 {stats.get('failed', 0)} 只，"
+                    f"总耗时 {round(stats.get('elapsed_sec', 0), 1)}s"
+                )
+                result = {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "message": message,
+                    "execution_time": datetime.now().isoformat(),
+                    "stats": stats,
+                }
+            except Exception as exc:
+                # 任意一只股票拉取失败或空数据都会向上抛出异常，
+                # 这里将任务状态标记为 failed 并返回明确错误
+                err = str(exc)
+                print(f"[ERROR] fetch_kline_to_analysis 任务失败: {err}")
+                result = {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "message": f"前复权 K 线覆盖更新失败：{err}",
+                    "execution_time": datetime.now().isoformat(),
+                    "error": err,
+                }
         elif task_id == "duplicate_check":
             # 数据重复扫描：对 stock_daily_qfq_new 查询 (stock_code, date) 重复项
             from sqlalchemy import text as sql_text

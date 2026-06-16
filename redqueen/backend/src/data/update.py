@@ -134,7 +134,7 @@ def update_industry_flow_data():
     #     engine.dispose()
 
 # 更新股票资金流数据
-def update_stock_flow(date=None):
+def update_stock_flow_data(date=None):
     """
     获取个股资金流数据并写入表 stock_daily_flow
     
