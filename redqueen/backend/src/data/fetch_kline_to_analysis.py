@@ -235,7 +235,7 @@ def fetch_kline_from_eastmoney(
 
 XUEQIU_BASE_URL = "https://stock.xueqiu.com/v5/stock/chart/kline.json"
 
-from config.cookies import XUEQIU_LOGIN_COOKIES
+from src.data.config.cookies import XUEQIU_LOGIN_COOKIES
 
 # column 顺序: ["timestamp","volume","open","high","low","close","chg","percent",
 #              "turnoverrate","amount","volume_post","amount_post"]

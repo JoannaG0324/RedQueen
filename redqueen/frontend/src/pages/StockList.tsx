@@ -29,6 +29,8 @@ interface StockData {
   stock_name: string;
   close: number;
   change_rate: number;
+  chg_pct_5?: number;
+  chg_pct_20?: number;
   growth_streak_days: number;
   growth_streak_pct: number;
   market_cap_r?: number;
@@ -1183,6 +1185,46 @@ const StockList: React.FC = () => {
       sorter: (a: any, b: any) => {
         const valA = typeof a.change_rate === 'number' ? a.change_rate : parseFloat(a.change_rate) || 0;
         const valB = typeof b.change_rate === 'number' ? b.change_rate : parseFloat(b.change_rate) || 0;
+        return valA - valB;
+      },
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(2)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: '5Chg%',
+      dataIndex: 'chg_pct_5',
+      key: 'chg_pct_5',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = typeof a.chg_pct_5 === 'number' ? a.chg_pct_5 : parseFloat(a.chg_pct_5) || 0;
+        const valB = typeof b.chg_pct_5 === 'number' ? b.chg_pct_5 : parseFloat(b.chg_pct_5) || 0;
+        return valA - valB;
+      },
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(2)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: '20Chg%',
+      dataIndex: 'chg_pct_20',
+      key: 'chg_pct_20',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = typeof a.chg_pct_20 === 'number' ? a.chg_pct_20 : parseFloat(a.chg_pct_20) || 0;
+        const valB = typeof b.chg_pct_20 === 'number' ? b.chg_pct_20 : parseFloat(b.chg_pct_20) || 0;
         return valA - valB;
       },
       render: (text: any) => {

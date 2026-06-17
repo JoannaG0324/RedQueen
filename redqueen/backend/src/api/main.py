@@ -385,48 +385,22 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
 
     condition_str = " AND ".join(conditions)
 
-    # 计算"前一日"（前一交易日，即表中小于 target_date 的最大 date）
-    # 注意：不再用自然日减 1，否则周一/节假日会命中空数据
-    target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    prev_trading_day = db.execute(
-        text(
-            "SELECT MAX(date) FROM stock_daily_qfq_calc WHERE date < :td"
-        ),
-        {"td": target_date_obj},
-    ).scalar()
-
-    if prev_trading_day is None:
-        # 兜底：若数据库里没有更早的记录，仍然用 target_date 自身，
-        # 避免用"自然日减 1"去 join 到空值
-        prev_trading_day = target_date_obj
-
-    if isinstance(prev_trading_day, date):
-        prev_date_str = prev_trading_day.isoformat()
-    else:
-        prev_date_str = date.fromisoformat(str(prev_trading_day)).isoformat()
-
-    # 构建 SQL 查询 - 包含前一日成交量和计算指标
+    # 构建 SQL 查询 - 直接从 stock_daily_qfq_calc 获取已计算的 volume_pct、chg_pct_5、chg_pct_20
     query = f"""
         SELECT
             sdqc.date, sdqc.stock_code, COALESCE(sd.stock_name, its.stock_name) as stock_name,
             it.industry_name as industry,
-            sd.close, sd.change_rate, sd.turnover,
+            sd.close, sd.change_rate, sdqc.chg_pct_5, sdqc.chg_pct_20, sd.turnover,
             sdqc.growth_streak_days, sdqc.growth_streak_pct,
             sd.volume,
-            COALESCE(sd_prev.volume, 0) as prev_volume,
             CASE
                 WHEN sd.turnover IS NOT NULL AND sd.turnover > 0
                 THEN sd.amount / (sd.turnover / 100) * 1.2
                 ELSE NULL
             END as market_cap_r,
-            CASE
-                WHEN sd_prev.volume IS NOT NULL AND sd_prev.volume > 0
-                THEN (sd.volume / sd_prev.volume - 1) * 100
-                ELSE NULL
-            END as volume_pct
+            sdqc.volume_pct
         FROM stock_daily_qfq_calc sdqc
         LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date
-        LEFT JOIN stock_daily_analysis sd_prev ON sd_prev.stock_code = sdqc.stock_code AND sd_prev.date = '{prev_date_str}'
         LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code
         LEFT JOIN industry_ths it ON it.industry_code = its.industry_code
         WHERE {condition_str}
@@ -446,12 +420,14 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             "industry": row[3],
             "close": row[4],
             "change_rate": row[5],
-            "turnover": row[6],
-            "growth_streak_days": row[7],
-            "growth_streak_pct": row[8],
-            "volume": row[9],
-            "market_cap_r": row[11],
-            "volume_pct": row[12]
+            "chg_pct_5": row[6],
+            "chg_pct_20": row[7],
+            "turnover": row[8],
+            "growth_streak_days": row[9],
+            "growth_streak_pct": row[10],
+            "volume": row[11],
+            "market_cap_r": row[12],
+            "volume_pct": row[13]
         })
 
     return stock_data_list

@@ -459,6 +459,14 @@ def _run_inner(start_dt: pd.Timestamp,
 
     df_all["date"] = pd.to_datetime(df_all["date"])
 
+    if write_start_dt == pd.Timestamp(end_date):
+        latest_codes = set(df_all[df_all["date"] == end_date]["stock_code"].tolist())
+        before_filter = df_all["stock_code"].nunique()
+        df_all = df_all[df_all["stock_code"].isin(latest_codes)].reset_index(drop=True)
+        after_filter = df_all["stock_code"].nunique()
+        if before_filter != after_filter:
+            print(f"    过滤最新交易日无数据的股票: {before_filter} -> {after_filter} 只")
+
     total_stocks = df_all["stock_code"].nunique()
     total_written = 0
     processed = 0

@@ -1,10 +1,61 @@
+"""
+股票技术指标计算模块
+
+功能概述：
+- 计算个股和行业的技术指标，包括移动平均线(MA)、平均真实波幅(ATR)、成交量变化率(volume_pct)、
+  多周期涨跌幅(chg_pct_3/5/20)、连涨天数/幅度(growth_streak)
+- 支持两种计算模式：增量更新（每日）和全量重算（覆盖）
+
+计算逻辑说明：
+1. 所有计算函数统一使用 "date 升序" 进行计算，结果按 "date 降序" 返回
+2. 数据量不足时对应指标为 NaN，上游填充 None（由 DataFrame to_dict('records') 统一处理）
+3. 增量模式：读取最近 INCREMENTAL_WINDOW(250) 天数据，仅计算并插入目标日期的数据
+4. 全量模式：读取最多 FULL_RECALC_LIMIT(4000) 天数据，删除旧数据后重新计算并覆盖
+
+指标列表：
+- MA系列：ma3, ma5, ma10, ma20, ma30, ma60, ma90, ma120, ma200（移动平均线）
+- ATR系列：atr3, atr5, atr10, atr14（平均真实波幅）
+- volume_pct：每日成交量较前一交易日的变化率（%）
+- chg_pct_3/5/20：每日收盘价较3/5/20日前收盘价的涨跌幅（%）
+- growth_streak_days：连涨天数
+- growth_streak_pct：连涨期间累计涨幅（%）
+
+数据表配置：
+- 个股数据：SOURCE_TABLE(stock_daily_analysis) -> TARGET_TABLE(stock_daily_qfq_calc)
+- 行业数据：INDUSTRY_SOURCE_TABLE(industry_ths_index) -> INDUSTRY_TARGET_TABLE(industry_ths_index_calc)
+- 标记表：MARK_TABLE(stock_qfq_mark)，用于标记跳空/除权股票，触发全量重算
+
+主要函数：
+- daily_process_stock_indicators(max_workers=10, full_recalc=False, stock_codes=None)
+  个股指标每日处理，支持增量/全量模式
+- daily_process_industry_indicators(max_workers=10, full_recalc=False, industry_codes=None)
+  行业指标每日处理，支持增量/全量模式
+
+使用示例：
+    # 每日增量更新（默认）
+    daily_process_stock_indicators(max_workers=10)
+    daily_process_industry_indicators(max_workers=10)
+    
+    # 全量重算所有数据
+    daily_process_stock_indicators(max_workers=10, full_recalc=True)
+    daily_process_industry_indicators(max_workers=10, full_recalc=True)
+    
+    # 全量重算指定股票/行业
+    daily_process_stock_indicators(max_workers=10, full_recalc=True, stock_codes=["000001"])
+    daily_process_industry_indicators(max_workers=10, full_recalc=True, industry_codes=["SW101"])
+"""
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from sqlalchemy import create_engine, text
 import numpy as np
 import pandas as pd
-from src.utils.config import settings
+try:
+    from src.utils.config import settings
+except ImportError:
+    from utils.config import settings
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -15,7 +66,7 @@ PASSWORD = settings.DB_PASSWORD
 HOST = settings.DB_HOST
 DATABASE = settings.DB_NAME
 
-# 数据源与目标表配置
+# 数据源与目标表配置（个股）
 SOURCE_TABLE = "stock_daily_analysis"          # 行情数据源（前复权日线）
 TARGET_TABLE = "stock_daily_qfq_calc"              # 指标计算结果表
 MARK_TABLE = "stock_qfq_mark"                    # 标记表，用于跟踪全量/增量
@@ -24,10 +75,9 @@ MARK_TABLE = "stock_qfq_mark"                    # 标记表，用于跟踪全�
 engine = create_engine(f"mysql+pymysql://{USER}:{PASSWORD}@{HOST}/{DATABASE}")
 
 # ==================== 计算参数 ====================
-# 注意：以下函数统一使用 "date 升序" 进行计算，再把结果按 "date 降序" 返回。
-# 数据量不足时对应指标为 NaN，上游填充 None（由 DataFrame to_dict('records') 统一处理。
 MA_PERIODS = [3, 5, 10, 20, 30, 60, 90, 120, 200]
 ATR_PERIODS = [3, 5, 10, 14]
+CHG_PCT_PERIODS = [3, 5, 20]
 
 # 用于增量模式：仅在需要最近多少天的数据来计算指标（大于最大窗宽）
 INCREMENTAL_WINDOW = 250
@@ -102,6 +152,49 @@ def calculate_atr(df, periods=ATR_PERIODS):
             atr = (csum[p:] - csum[:-p]) / p
             atr = np.r_[np.full(p - 1, np.nan), atr]
         out[f"atr{p}"] = _fill_none_list(atr[::-1])
+    return out
+
+
+def calculate_volume_pct(df):
+    """计算每日成交量较前一交易日的变化率。"""
+    if df is None or len(df) == 0:
+        return {"volume_pct": []}
+
+    asc = _to_asc(df)
+    volume = asc["volume"].astype(float).values
+    n = len(volume)
+
+    prev_volume = np.roll(volume, 1)
+    prev_volume[0] = np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        volume_pct = np.where(prev_volume != 0,
+                              (volume - prev_volume) / prev_volume * 100.0, np.nan)
+
+    return {"volume_pct": _fill_none_list(volume_pct[::-1])}
+
+
+def calculate_chg_pct(df, periods=[3, 5, 20]):
+    """计算多周期涨跌幅：close较N日前close的涨跌幅。"""
+    if df is None or len(df) == 0:
+        return {f"chg_pct_{p}": [] for p in periods}
+
+    asc = _to_asc(df)
+    close = asc["close"].astype(float).values
+    n = len(close)
+    out = {}
+
+    for p in periods:
+        if p <= 0 or n <= p:
+            chg_pct = np.full(n, np.nan)
+        else:
+            prev_close = np.roll(close, p)
+            prev_close[:p] = np.nan
+            with np.errstate(divide="ignore", invalid="ignore"):
+                chg_pct = np.where(prev_close != 0,
+                                   (close - prev_close) / prev_close * 100.0, np.nan)
+        out[f"chg_pct_{p}"] = _fill_none_list(chg_pct[::-1])
+
     return out
 
 
@@ -182,12 +275,16 @@ def _calc_rows_for(df_stock, stock_code, dates_filter=None):
                 "ma20": None, "ma30": None, "ma60": None,
                 "ma90": None, "ma120": None, "ma200": None,
                 "atr3": None, "atr5": None, "atr10": None, "atr14": None,
+                "volume_pct": None,
+                "chg_pct_3": None, "chg_pct_5": None, "chg_pct_20": None,
                 "growth_streak_days": None, "growth_streak_pct": None,
             })
         return rows
 
     ma_results = calculate_moving_averages(df_stock)
     atr_results = calculate_atr(df_stock)
+    volume_pct_results = calculate_volume_pct(df_stock)
+    chg_pct_results = calculate_chg_pct(df_stock, periods=[3, 5, 20])
     growth_results = calculate_growth_streak(df_stock)
 
     rows = []
@@ -201,6 +298,13 @@ def _calc_rows_for(df_stock, stock_code, dates_filter=None):
             row[ma_col] = ma_values[i] if i < len(ma_values) else None
         for atr_col, atr_values in atr_results.items():
             row[atr_col] = atr_values[i] if i < len(atr_values) else None
+        row["volume_pct"] = (
+            volume_pct_results["volume_pct"][i]
+            if i < len(volume_pct_results["volume_pct"])
+            else None
+        )
+        for chg_col, chg_values in chg_pct_results.items():
+            row[chg_col] = chg_values[i] if i < len(chg_values) else None
         row["growth_streak_days"] = (
             growth_results["growth_streak_days"][i]
             if i < len(growth_results["growth_streak_days"])
@@ -215,45 +319,67 @@ def _calc_rows_for(df_stock, stock_code, dates_filter=None):
     return rows
 
 
-def _bulk_insert_rows(rows, batch_size=1000):
-    """按批插入，避免单次 SQL 参数过多。"""
+def _bulk_insert_rows(rows, batch_size=500, max_retries=3):
+    """按批插入或更新，避免单次 SQL 参数过多。使用 INSERT ... ON DUPLICATE KEY UPDATE 实现 UPSERT。
+    
+    遇到死锁错误时自动重试，最多重试 max_retries 次。
+    """
     if not rows:
         return
     placeholders = (
         ":stock_code, :date, "
         ":ma3, :ma5, :ma10, :ma20, :ma30, :ma60, :ma90, :ma120, :ma200, "
         ":atr3, :atr5, :atr10, :atr14, "
+        ":volume_pct, "
+        ":chg_pct_3, :chg_pct_5, :chg_pct_20, "
         ":growth_streak_days, :growth_streak_pct"
     )
     cols = (
         "stock_code, date, "
         "ma3, ma5, ma10, ma20, ma30, ma60, ma90, ma120, ma200, "
         "atr3, atr5, atr10, atr14, "
+        "volume_pct, "
+        "chg_pct_3, chg_pct_5, chg_pct_20, "
         "growth_streak_days, growth_streak_pct"
     )
-    ins_sql = text(
-        f"INSERT INTO {TARGET_TABLE} ({cols}) VALUES ({placeholders})"
+    update_clause = (
+        "ma3 = VALUES(ma3), ma5 = VALUES(ma5), ma10 = VALUES(ma10), "
+        "ma20 = VALUES(ma20), ma30 = VALUES(ma30), ma60 = VALUES(ma60), "
+        "ma90 = VALUES(ma90), ma120 = VALUES(ma120), ma200 = VALUES(ma200), "
+        "atr3 = VALUES(atr3), atr5 = VALUES(atr5), atr10 = VALUES(atr10), atr14 = VALUES(atr14), "
+        "volume_pct = VALUES(volume_pct), "
+        "chg_pct_3 = VALUES(chg_pct_3), chg_pct_5 = VALUES(chg_pct_5), chg_pct_20 = VALUES(chg_pct_20), "
+        "growth_streak_days = VALUES(growth_streak_days), growth_streak_pct = VALUES(growth_streak_pct)"
     )
-    with engine.begin() as conn:
-        for start in range(0, len(rows), batch_size):
-            conn.execute(ins_sql, rows[start:start + batch_size])
+    ins_sql = text(
+        f"INSERT INTO {TARGET_TABLE} ({cols}) VALUES ({placeholders}) "
+        f"ON DUPLICATE KEY UPDATE {update_clause}"
+    )
+    
+    for retry in range(max_retries + 1):
+        try:
+            with engine.begin() as conn:
+                for start in range(0, len(rows), batch_size):
+                    conn.execute(ins_sql, rows[start:start + batch_size])
+            return
+        except Exception as exc:
+            if retry < max_retries and hasattr(exc, 'args') and exc.args[0] == 1213:
+                time.sleep(0.1 * (retry + 1))
+                continue
+            raise
 
 
 def process_stock_indicators_recalc(stock_code):
     """对某只股票进行『全量重算』（stock_qfq_mark 中存在即标记为跳空命中）。
 
     步骤：
-    1. 删除 TARGET_TABLE 中该股全部历史记录；
-    2. 从 SOURCE_TABLE 读取最多 FULL_RECALC_LIMIT 条日线；
-    3. 向量化计算全部交易日的指标；
-    4. 批量插回 TARGET_TABLE。
+    1. 从 SOURCE_TABLE 读取最多 FULL_RECALC_LIMIT 条日线；
+    2. 向量化计算全部交易日的指标；
+    3. 返回计算结果（行数据列表），由调用方统一写入。
+
+    返回值：(stock_code, rows) 元组，rows 为计算后的行数据列表，计算失败返回 None。
     """
     try:
-        with engine.begin() as conn:
-            conn.execute(text(
-                f"DELETE FROM {TARGET_TABLE} WHERE stock_code = :code"
-            ), {"code": stock_code})
-
         query = text(f"""
             SELECT stock_code, date, open, close, high, low, volume, amount
             FROM {SOURCE_TABLE}
@@ -266,32 +392,23 @@ def process_stock_indicators_recalc(stock_code):
 
         if df_stock.empty:
             print(f"  [重算] {stock_code} 在 {SOURCE_TABLE} 无数据，跳过")
-            return False
+            return (stock_code, None)
 
         rows = _calc_rows_for(df_stock, stock_code, dates_filter=None)
-        _bulk_insert_rows(rows)
-
-        print(f"  [重算] {stock_code} 完成，写入 {len(rows)} 行")
-        return True
+        return (stock_code, rows)
 
     except Exception as exc:
-        print(f"  [重算] {stock_code} 失败: {exc}")
-        return False
+        print(f"  [重算] {stock_code} 计算失败: {exc}")
+        return (stock_code, None)
 
 
 def process_daily_stock_indicators(stock_code, target_date):
     """对某只股票进行『增量更新』，只计算 target_date 这一天的指标。
 
-    只删除 TARGET_TABLE 中该股该日期的旧数据，并按最近 INCREMENTAL_WINDOW 天
-    的行情计算指标，最后仅插入 target_date 一行。
+    按最近 INCREMENTAL_WINDOW 天的行情计算指标，使用 UPSERT（INSERT ... ON DUPLICATE KEY UPDATE）
+    写入 target_date 一行，已存在的数据更新，不存在的数据插入。
     """
     try:
-        with engine.begin() as conn:
-            conn.execute(text(
-                f"DELETE FROM {TARGET_TABLE} "
-                f"WHERE stock_code = :code AND date = :d"
-            ), {"code": stock_code, "d": target_date})
-
         query = text(f"""
             SELECT stock_code, date, open, close, high, low, volume, amount
             FROM {SOURCE_TABLE}
@@ -307,31 +424,43 @@ def process_daily_stock_indicators(stock_code, target_date):
 
         if df_stock.empty:
             print(f"  [增量] {stock_code} 在 {SOURCE_TABLE} 无数据")
-            return False
+            return 0
 
         rows = _calc_rows_for(df_stock, stock_code,
                                dates_filter=[str(target_date)])
         if not rows:
-            return False
+            return 0
 
         _bulk_insert_rows(rows)
-        return True
+        return len(rows)
 
     except Exception as exc:
         print(f"  [增量] {stock_code} 失败: {exc}")
-        return False
+        return 0
 
 
-def daily_process_stock_indicators(max_workers=10):
+def daily_process_stock_indicators(max_workers=10, full_recalc=False, stock_codes=None):
     """每日处理函数：按 MARK_TABLE(stock_qfq_mark) 分流为全量重算与增量更新。
 
-    - 全量重算：MARK_TABLE 中存在的股票（本轮被标记为跳空/除权）；
-    - 其它股票：对 SOURCE_TABLE 的最新日期做每日增量更新；
+    模式说明：
+    - 增量模式（full_recalc=False，默认）：
+      * MARK_TABLE 中存在的股票（本轮被标记为跳空/除权）走全量重算；
+      * 其它股票：对 SOURCE_TABLE 的最新日期做每日增量更新；
+    - 全量模式（full_recalc=True）：删除 TARGET_TABLE 中全部数据，重新计算并覆盖全量数据；
     - 数据源全部使用 SOURCE_TABLE（= stock_daily_analysis）。
+
+    Args:
+        max_workers: 最大线程数，默认为10
+        full_recalc: 是否全量重算，默认为False；设为True时忽略MARK_TABLE，强制全量重算
+        stock_codes: 指定股票代码列表，为None时处理全部股票
+
+    Returns:
+        dict: 包含处理结果的统计信息
     """
     try:
         print(f"==== 每日指标计算处理 {TARGET_TABLE} ====")
         print(f"数据源: {SOURCE_TABLE}，标记表: {MARK_TABLE}")
+        print(f"模式: {'全量重算' if full_recalc else '增量更新'}")
 
         latest_df = pd.read_sql(
             text(f"SELECT MAX(date) as latest_date FROM {SOURCE_TABLE}"),
@@ -344,30 +473,37 @@ def daily_process_stock_indicators(max_workers=10):
 
         print(f"最新数据日期: {latest_date}")
 
-        codes_query = text(f"""
-            SELECT DISTINCT stock_code FROM {SOURCE_TABLE} WHERE date = :d
-        """)
-        codes_df = pd.read_sql(codes_query, engine, params={"d": latest_date})
-        all_codes = set(codes_df["stock_code"].tolist())
-
-        try:
-            mark_df = pd.read_sql(text(f"""
-                SELECT DISTINCT stock_code FROM {MARK_TABLE}
-            """), engine)
-        except Exception:
-            # 表未创建或临时不可用：回退为"全部走增量"
-            mark_df = pd.DataFrame(columns=["stock_code"])
-
-        # 跳空命中：只要在 stock_qfq_mark 中存在，即本轮需全量重算
-        if mark_df.empty:
-            recalc_codes = set()
+        if stock_codes is None:
+            codes_query = text(f"""
+                SELECT DISTINCT stock_code FROM {SOURCE_TABLE} WHERE date = :d
+            """)
+            codes_df = pd.read_sql(codes_query, engine, params={"d": latest_date})
+            all_codes = set(codes_df["stock_code"].tolist())
         else:
-            recalc_codes = set(mark_df["stock_code"].astype(str).tolist())
+            if isinstance(stock_codes, str):
+                stock_codes = [stock_codes]
+            all_codes = set(stock_codes)
 
-        # 仅对"在 SOURCE_TABLE 最新交易日中存在数据"的股票处理（避免标记一些已退市但还残留的代码）
-        recalc_codes &= all_codes
-        incremental_codes = list(all_codes - recalc_codes)
-        recalc_codes = list(recalc_codes)
+        if full_recalc:
+            print(f"执行全量重算，共 {len(all_codes)} 只股票")
+            recalc_codes = list(all_codes)
+            incremental_codes = []
+        else:
+            try:
+                mark_df = pd.read_sql(text(f"""
+                    SELECT DISTINCT stock_code FROM {MARK_TABLE}
+                """), engine)
+            except Exception:
+                mark_df = pd.DataFrame(columns=["stock_code"])
+
+            if mark_df.empty:
+                recalc_codes = set()
+            else:
+                recalc_codes = set(mark_df["stock_code"].astype(str).tolist())
+
+            recalc_codes &= all_codes
+            incremental_codes = list(all_codes - recalc_codes)
+            recalc_codes = list(recalc_codes)
 
         print(f"全量重算 {len(recalc_codes)} 只，增量更新 {len(incremental_codes)} 只")
 
@@ -378,6 +514,8 @@ def daily_process_stock_indicators(max_workers=10):
         if recalc_codes:
             print(f"开始全量重算 {len(recalc_codes)} 只股票...")
             recalc_workers = max(2, max_workers // 2)
+            
+            all_results = []
             with ThreadPoolExecutor(max_workers=recalc_workers) as ex:
                 future_map = {
                     ex.submit(process_stock_indicators_recalc, c): c
@@ -389,16 +527,33 @@ def daily_process_stock_indicators(max_workers=10):
                     code = future_map[fut]
                     processed += 1
                     try:
-                        ok = fut.result()
-                        if ok:
-                            stats["recalc_ok"] += 1
+                        code, rows = fut.result()
+                        all_results.append((code, rows))
+                        if rows is not None:
+                            print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，{len(rows)} 行", end="", flush=True)
                         else:
-                            stats["recalc_fail"] += 1
+                            print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，无数据", end="", flush=True)
                     except Exception as exc:
-                        print(f"  {code} 重算异常: {exc}")
-                        stats["recalc_fail"] += 1
-                    if processed % 50 == 0 or processed == total:
-                        print(f"  重算进度 {processed}/{total}")
+                        print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，失败: {exc}", end="", flush=True)
+                        all_results.append((code, None))
+                print()
+            
+            print("开始串行写入数据库...")
+            processed = 0
+            total = len(all_results)
+            for code, rows in sorted(all_results, key=lambda x: x[0]):
+                processed += 1
+                if rows is None:
+                    stats["recalc_fail"] += 1
+                    continue
+                try:
+                    _bulk_insert_rows(rows)
+                    stats["recalc_ok"] += 1
+                    print(f"\r[全量模式] 写入完成 {processed}/{total}：{code}，{len(rows)} 行", end="", flush=True)
+                except Exception as exc:
+                    print(f"\r[全量模式] 写入完成 {processed}/{total}：{code}，失败: {exc}", end="", flush=True)
+                    stats["recalc_fail"] += 1
+            print()
 
         if incremental_codes:
             print(f"开始增量更新 {len(incremental_codes)} 只股票...")
@@ -413,16 +568,16 @@ def daily_process_stock_indicators(max_workers=10):
                     code = future_map[fut]
                     processed += 1
                     try:
-                        ok = fut.result()
-                        if ok:
+                        row_count = fut.result()
+                        if row_count > 0:
                             stats["incr_ok"] += 1
+                            print(f"\r[增量模式] 已完成 {processed}/{total}：{code} 成功，写入 {row_count} 行", end="", flush=True)
                         else:
                             stats["incr_fail"] += 1
                     except Exception as exc:
-                        print(f"  {code} 增量异常: {exc}")
+                        print(f"\r[增量模式] 已完成 {processed}/{total}：{code} 失败: {exc}", end="", flush=True)
                         stats["incr_fail"] += 1
-                    if processed % 500 == 0 or processed == total:
-                        print(f"  增量进度 {processed}/{total}")
+                print()
 
         total_time = time.time() - start_time
         print(f"\n每日处理完成！日期: {latest_date}")
@@ -436,409 +591,336 @@ def daily_process_stock_indicators(max_workers=10):
         print(f"每日处理过程中出现错误: {str(e)}")
         raise
 
-# ==================== 【行业数据】初始化 处理行业数据并写入数据库 by industry_ths_index ====================
+# ==================== 【行业数据】处理行业指标并写入数据库 ====================
 
-def process_industry_indicators(stock_code):
+INDUSTRY_SOURCE_TABLE = "industry_ths_index"
+INDUSTRY_TARGET_TABLE = "industry_ths_index_calc"
+
+
+def _calc_industry_rows_for(df_industry, industry_code, dates_filter=None):
+    """通用：在按 date 降序的 df_industry 上计算全部行业指标行。
+
+    若 dates_filter 不为空，则仅保留日期在该列表中的行（通过 str(date) 匹配）。
     """
-    计算单个股票的指标并写入数据库（一体化函数，包含更新功能）
+    n = len(df_industry)
+    if n == 0:
+        return []
+
+    if n < 3:
+        rows = []
+        for i in range(n):
+            date_i = df_industry.iloc[i]["date"]
+            if dates_filter is not None and str(date_i) not in set(dates_filter):
+                continue
+            rows.append({
+                "industry_code": industry_code,
+                "date": date_i,
+                "ma3": None, "ma5": None, "ma10": None,
+                "ma20": None, "ma30": None, "ma60": None,
+                "ma90": None, "ma120": None, "ma200": None,
+                "atr3": None, "atr5": None, "atr10": None, "atr14": None,
+                "volume_pct": None,
+                "chg_pct_3": None, "chg_pct_5": None, "chg_pct_20": None,
+                "growth_streak_days": None, "growth_streak_pct": None,
+            })
+        return rows
+
+    ma_results = calculate_moving_averages(df_industry)
+    atr_results = calculate_atr(df_industry)
+    volume_pct_results = calculate_volume_pct(df_industry)
+    chg_pct_results = calculate_chg_pct(df_industry, periods=[3, 5, 20])
+    growth_results = calculate_growth_streak(df_industry)
+
+    rows = []
+    for i in range(n):
+        date_i = df_industry.iloc[i]["date"]
+        if dates_filter is not None and str(date_i) not in set(dates_filter):
+            continue
+
+        row = {"industry_code": industry_code, "date": date_i}
+        for ma_col, ma_values in ma_results.items():
+            row[ma_col] = ma_values[i] if i < len(ma_values) else None
+        for atr_col, atr_values in atr_results.items():
+            row[atr_col] = atr_values[i] if i < len(atr_values) else None
+        row["volume_pct"] = (
+            volume_pct_results["volume_pct"][i]
+            if i < len(volume_pct_results["volume_pct"])
+            else None
+        )
+        for chg_col, chg_values in chg_pct_results.items():
+            row[chg_col] = chg_values[i] if i < len(chg_values) else None
+        row["growth_streak_days"] = (
+            growth_results["growth_streak_days"][i]
+            if i < len(growth_results["growth_streak_days"])
+            else None
+        )
+        row["growth_streak_pct"] = (
+            growth_results["growth_streak_pct"][i]
+            if i < len(growth_results["growth_streak_pct"])
+            else None
+        )
+        rows.append(row)
+    return rows
+
+
+def _bulk_insert_industry_rows(rows, batch_size=500, max_retries=3):
+    """按批插入或更新行业指标数据，避免单次 SQL 参数过多。使用 INSERT ... ON DUPLICATE KEY UPDATE 实现 UPSERT。
     
-    Args:
-        stock_code: 股票代码
-        
-    Returns:
-        bool: 处理是否成功
+    遇到死锁错误时自动重试，最多重试 max_retries 次。
+    """
+    if not rows:
+        return
+    placeholders = (
+        ":industry_code, :date, "
+        ":ma3, :ma5, :ma10, :ma20, :ma30, :ma60, :ma90, :ma120, :ma200, "
+        ":atr3, :atr5, :atr10, :atr14, "
+        ":volume_pct, "
+        ":chg_pct_3, :chg_pct_5, :chg_pct_20, "
+        ":growth_streak_days, :growth_streak_pct"
+    )
+    cols = (
+        "industry_code, date, "
+        "ma3, ma5, ma10, ma20, ma30, ma60, ma90, ma120, ma200, "
+        "atr3, atr5, atr10, atr14, "
+        "volume_pct, "
+        "chg_pct_3, chg_pct_5, chg_pct_20, "
+        "growth_streak_days, growth_streak_pct"
+    )
+    update_clause = (
+        "ma3 = VALUES(ma3), ma5 = VALUES(ma5), ma10 = VALUES(ma10), "
+        "ma20 = VALUES(ma20), ma30 = VALUES(ma30), ma60 = VALUES(ma60), "
+        "ma90 = VALUES(ma90), ma120 = VALUES(ma120), ma200 = VALUES(ma200), "
+        "atr3 = VALUES(atr3), atr5 = VALUES(atr5), atr10 = VALUES(atr10), atr14 = VALUES(atr14), "
+        "volume_pct = VALUES(volume_pct), "
+        "chg_pct_3 = VALUES(chg_pct_3), chg_pct_5 = VALUES(chg_pct_5), chg_pct_20 = VALUES(chg_pct_20), "
+        "growth_streak_days = VALUES(growth_streak_days), growth_streak_pct = VALUES(growth_streak_pct)"
+    )
+    ins_sql = text(
+        f"INSERT INTO {INDUSTRY_TARGET_TABLE} ({cols}) VALUES ({placeholders}) "
+        f"ON DUPLICATE KEY UPDATE {update_clause}"
+    )
+    
+    for retry in range(max_retries + 1):
+        try:
+            with engine.begin() as conn:
+                for start in range(0, len(rows), batch_size):
+                    conn.execute(ins_sql, rows[start:start + batch_size])
+            return
+        except Exception as exc:
+            if retry < max_retries and hasattr(exc, 'args') and exc.args[0] == 1213:
+                time.sleep(0.1 * (retry + 1))
+                continue
+            raise
+
+
+def process_industry_indicators_recalc(industry_code):
+    """对某个行业进行『全量重算』。
+
+    步骤：
+    1. 从 INDUSTRY_SOURCE_TABLE 读取最多 FULL_RECALC_LIMIT 条日线；
+    2. 向量化计算全部交易日的指标；
+    3. 返回计算结果（行数据列表），由调用方统一写入。
+
+    返回值：(industry_code, rows) 元组，rows 为计算后的行数据列表，计算失败返回 None。
     """
     try:
-        # 先删除该股票的旧数据（更新模式）!update
-        delete_sql = f"DELETE FROM industry_ths_index_calc WHERE industry_code = '{stock_code}'" # by industry_ths_index !update
-        with engine.begin() as conn:
-            conn.execute(text(delete_sql))
-        
-        # 查询单个股票的数据
-        query = f"""
-        SELECT industry_code, date, open, close, high, low, volume, amount
-        FROM industry_ths_index
-        WHERE industry_code = '{stock_code}'
-        ORDER BY date DESC
-        """
-        
-        df_stock = pd.read_sql(query, engine)
-        
-        if df_stock.empty:
-            print(f"股票 {stock_code} 没有找到数据")
-            return False
-        
-        if len(df_stock) < 3:  # 至少需要3天数据
-            print(f"股票 {stock_code} 数据不足（仅{len(df_stock)}条），所有计算指标存入NULL值")
-            # 数据不足时，将所有计算指标设置为NULL，但仍然保存基础数据
-            calc_data = []
-            for i in range(len(df_stock)):
-                row_data = {
-                    'industry_code': stock_code, #!update
-                    'date': df_stock.iloc[i]['date'],
-                    'ma3': None,
-                    'ma5': None,
-                    'ma10': None,
-                    'ma20': None,
-                    'ma30': None,
-                    'ma60': None,
-                    'ma90': None,
-                    'ma120': None,
-                    'ma200': None,
-                    'atr3': None,
-                    'atr5': None,
-                    'atr10': None,
-                    'atr14': None
-                }
-                calc_data.append(row_data)
-            
-            # 转换为DataFrame
-            df_calc = pd.DataFrame(calc_data)
-            
-            # 存储到数据库（使用append模式）
-            df_calc.to_sql('industry_ths_index_calc', engine, if_exists='append', #!update
-                          index=False, method='multi')
-            
-            print(f"股票 {stock_code} 更新完成，共处理 {len(df_calc)} 条记录（指标为NULL）")
-            return True
-        
-        # 计算移动平均线
-        ma_results = calculate_moving_averages(df_stock)
-        
-        # 计算ATR
-        atr_results = calculate_atr(df_stock)
-        
-        # 准备插入数据
-        calc_data = []
-        for i in range(len(df_stock)):
-            row_data = {
-                'industry_code': stock_code, #!update
-                'date': df_stock.iloc[i]['date'],
-            }
-            
-            # 添加MA数据
-            for ma_col, ma_values in ma_results.items():
-                row_data[ma_col] = ma_values[i]
-            
-            # 添加ATR数据
-            for atr_col, atr_values in atr_results.items():
-                row_data[atr_col] = atr_values[i]
-            
-            calc_data.append(row_data)
-        
-        # 转换为DataFrame
-        df_calc = pd.DataFrame(calc_data)
-        
-        # 存储到数据库（使用append模式）
-        df_calc.to_sql('industry_ths_index_calc', engine, if_exists='append', 
-                      index=False, method='multi')
-        
-        print(f"股票 {stock_code} 更新完成，共处理 {len(df_calc)} 条记录")
-        return True
-        
-    except Exception as e:
-        print(f"处理股票 {stock_code} 时出现错误: {str(e)}")
-        return False
-    
-    print("计算结果表创建完成")
+        query = text(f"""
+            SELECT industry_code, date, open, close, high, low, volume, amount
+            FROM {INDUSTRY_SOURCE_TABLE}
+            WHERE industry_code = :code
+            ORDER BY date DESC
+            LIMIT :lim
+        """)
+        df_industry = pd.read_sql(query, engine,
+                                   params={"code": industry_code, "lim": FULL_RECALC_LIMIT})
 
-def calculate_industry_indicators_multithreaded(stock_codes=None, max_workers=10):
-    """
-    使用多线程计算股票指标（统一函数，支持计算全部股票或指定股票）
-    
-    Args:
-        stock_codes: 股票代码列表，如果为None则计算所有股票
-        max_workers: 最大线程数，默认为4
-        
-    Returns:
-        dict: 包含成功和失败统计的字典
-    """
-        
-    try:
-        # 创建计算结果表
-        # create_calc_table()
-        
-        if stock_codes is None:
-            print(f"stock_codes 为空，不进行计算")
-        elif isinstance(stock_codes, str):
-            stock_codes = [stock_codes]
-            print(f"开始计算指定 {len(stock_codes)} 只股票的指标，使用 {max_workers} 个线程")
-        else:
-            print(f"开始批量计算 {len(stock_codes)} 只股票的指标，使用 {max_workers} 个线程")
-        
-        # 记录开始时间
-        start_time = time.time()
-        
-        # 使用线程池执行任务
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
-            future_to_stock = {executor.submit(process_industry_indicators, stock_code): stock_code 
-                             for stock_code in stock_codes}
-            
-            # 收集结果
-            successful = 0
-            failed = 0
-            total_count = len(stock_codes)
-            processed = 0
-            
-            for future in as_completed(future_to_stock):
-                stock_code = future_to_stock[future]
-                processed += 1
-                try:
-                    result = future.result()
-                    if result:
-                        successful += 1
-                    else:
-                        failed += 1
-                except Exception as exc:
-                    print(f'股票 {stock_code} 处理时发生异常: {exc}')
-                    failed += 1
-                
-                # 打印进度（在同一行更新）
-                print(f"\r{processed}/{total_count} 股票 {stock_code} 处理完成", end="", flush=True)
-        
-        # 计算总耗时
-        total_time = time.time() - start_time
-        
-        print(f"多线程计算完成！")
-        print(f"成功: {successful} 只股票")
-        print(f"失败: {failed} 只股票") 
-        print(f"总耗时: {total_time:.2f} 秒")
-        print(f"平均每只股票: {total_time/len(stock_codes):.2f} 秒")
-        
-        return {
-            'successful': successful,
-            'failed': failed,
-            'total_time': total_time,
-            'average_time': total_time/len(stock_codes)
-        }
-        
-    except Exception as e:
-        print(f"多线程计算过程中出现错误: {str(e)}")
-        raise
+        if df_industry.empty:
+            print(f"  [重算] {industry_code} 在 {INDUSTRY_SOURCE_TABLE} 无数据，跳过")
+            return (industry_code, None)
 
-# ===== daily update：每日处理函数 =====
+        rows = _calc_industry_rows_for(df_industry, industry_code, dates_filter=None)
+        return (industry_code, rows)
+
+    except Exception as exc:
+        print(f"  [重算] {industry_code} 计算失败: {exc}")
+        return (industry_code, None)
+
 def process_daily_industry_indicators(industry_code, target_date):
-    """
-    处理单个行业的每日指标计算
-    
-    Args:
-        industry_code: 行业代码
-        target_date: 目标日期（仅计算这一天的指标）
-        
-    Returns:
-        bool: 处理是否成功
+    """对某个行业进行『增量更新』，只计算 target_date 这一天的指标。
+
+    按最近 INCREMENTAL_WINDOW 天的行情计算指标，使用 UPSERT（INSERT ... ON DUPLICATE KEY UPDATE）
+    写入 target_date 一行，已存在的数据更新，不存在的数据插入。
     """
     try:
-        # 先删除该行业在目标日期的旧数据
-        delete_sql = f"DELETE FROM industry_ths_index_calc WHERE industry_code = '{industry_code}' AND date = '{target_date}'"
-        with engine.begin() as conn:
-            conn.execute(text(delete_sql))
-        
-        # 查询该行业最近120天的数据（用于指标计算）
-        query = f"""
-        SELECT industry_code, date, open, close, high, low, volume, amount
-        FROM industry_ths_index
-        WHERE industry_code = '{industry_code}'
-        AND date <= '{target_date}'
-        ORDER BY date DESC
-        LIMIT 200
-        """
-        
-        df_stock = pd.read_sql(query, engine)
-        
-        if df_stock.empty:
-            print(f"股票 {industry_code} 没有找到数据")
-            return False
-        
-        if len(df_stock) < 3:  # 至少需要3天数据
-            print(f"行业 {industry_code} 数据不足（仅{len(df_stock)}条），所有计算指标存入NULL值")
-            # 数据不足时，将所有计算指标设置为NULL，但仍然保存基础数据
-            calc_data = []
-            for i in range(len(df_stock)):
-                if df_stock.iloc[i]['date'] == target_date:  # latest date
-                # if str(df_stock.iloc[i]['date']) == str(target_date):  # 【1-指定日期计算】
-                    row_data = {
-                        'industry_code': industry_code,
-                        'date': df_stock.iloc[i]['date'],
-                        'ma3': None,
-                        'ma5': None,
-                        'ma10': None,
-                        'ma20': None,
-                        'ma30': None,
-                        'ma60': None,
-                        'ma90': None,
-                        'ma120': None,
-                        'ma200': None,
-                        'atr3': None,
-                        'atr5': None,
-                        'atr10': None,
-                        'atr14': None,
-                        'growth_streak_days': None,
-                        'growth_streak_pct': None
-                    }
-                    calc_data.append(row_data)
-            
-            if calc_data:
-                # 转换为DataFrame
-                df_calc = pd.DataFrame(calc_data)
-                
-                # 存储到数据库（使用append模式）
-                df_calc.to_sql('industry_ths_index_calc', engine, if_exists='append', 
-                              index=False, method='multi')
-                
-                # print(f"行业 {industry_code} 更新完成，共处理 {len(df_calc)} 条记录（指标为NULL）")
-                return True
-            else:
-                return False
-        
-        # 计算移动平均线
-        ma_results = calculate_moving_averages(df_stock)
-        
-        # 计算ATR
-        atr_results = calculate_atr(df_stock)
-        
-        # 计算连涨天数和连涨幅度
-        growth_streak_results = calculate_growth_streak(df_stock)
-        
-        # 准备插入数据（只插入目标日期的数据）
-        calc_data = []
-        for i in range(len(df_stock)):
-            if df_stock.iloc[i]['date'] == target_date: # latest date
-            # if str(df_stock.iloc[i]['date']) == str(target_date): # 【1-指定日期计算】
-                row_data = {
-                    'industry_code': industry_code,
-                    'date': df_stock.iloc[i]['date'],
-                }
-                
-                # 添加MA数据
-                for ma_col, ma_values in ma_results.items():
-                    row_data[ma_col] = ma_values[i]
-                
-                # 添加ATR数据
-                for atr_col, atr_values in atr_results.items():
-                    row_data[atr_col] = atr_values[i]
-                
-                # 添加连涨天数和连涨幅度
-                row_data['growth_streak_days'] = growth_streak_results['growth_streak_days'][i]
-                row_data['growth_streak_pct'] = growth_streak_results['growth_streak_pct'][i]
-                
-                calc_data.append(row_data)
-        
-        if not calc_data:
-            print(f"行业 {industry_code} 在目标日期 {target_date} 没有数据")
-            return False
-        
-        # 转换为DataFrame
-        df_calc = pd.DataFrame(calc_data)
-        
-        # 存储到数据库（使用append模式）
-        df_calc.to_sql('industry_ths_index_calc', engine, if_exists='append', 
-                      index=False, method='multi')
-        
-        # print(f"行业 {industry_code} 更新完成，共处理 {len(df_calc)} 条记录")
-        return True
-        
-    except Exception as e:
-        print(f"处理行业 {industry_code} 时出现错误: {str(e)}")
-        return False
+        query = text(f"""
+            SELECT industry_code, date, open, close, high, low, volume, amount
+            FROM {INDUSTRY_SOURCE_TABLE}
+            WHERE industry_code = :code AND date <= :d
+            ORDER BY date DESC
+            LIMIT :lim
+        """)
+        df_industry = pd.read_sql(
+            query, engine,
+            params={"code": industry_code, "d": target_date,
+                    "lim": INCREMENTAL_WINDOW},
+        )
 
-def daily_process_industry_indicators(max_workers=10):
-    """
-    每日处理函数：更新当天全部个股的指标数据
-    
-    功能说明：
-    1. 获取industry_ths_index表中的最新日期
-    2. 获取该日期所有有数据的行业代码
-    3. 为每个行业获取最近120天的数据（用于指标计算）
-    4. 计算这些行业的最新指标（仅最新日期）
-    5. 将计算结果存入industry_ths_index_calc表
-    
+        if df_industry.empty:
+            print(f"  [增量] {industry_code} 在 {INDUSTRY_SOURCE_TABLE} 无数据")
+            return 0
+
+        rows = _calc_industry_rows_for(df_industry, industry_code,
+                                        dates_filter=[str(target_date)])
+        if not rows:
+            return 0
+
+        _bulk_insert_industry_rows(rows)
+        return len(rows)
+
+    except Exception as exc:
+        print(f"  [增量] {industry_code} 失败: {exc}")
+        return 0
+
+def daily_process_industry_indicators(max_workers=10, full_recalc=False, industry_codes=None):
+    """每日处理函数：按增量或全量模式处理行业指标。
+
+    模式说明：
+    - 增量模式（full_recalc=False，默认）：对 SOURCE_TABLE 的最新日期做每日增量更新；
+    - 全量模式（full_recalc=True）：删除 TARGET_TABLE 中全部数据，重新计算并覆盖全量数据。
+
+    数据源全部使用 INDUSTRY_SOURCE_TABLE（= industry_ths_index）。
+
     Args:
         max_workers: 最大线程数，默认为10
-        
+        full_recalc: 是否全量重算，默认为False
+        industry_codes: 指定行业代码列表，为None时处理全部行业
+
     Returns:
         dict: 包含处理结果的统计信息
     """
     try:
-        print("==== 每日指标计算处理 industry_ths_index_calc ====")
-        print("开始每日指标计算处理...")
-        
-        # latest_date = '2026-04-01'  # 【1-指定日期计算】
+        print(f"==== 每日指标计算处理 {INDUSTRY_TARGET_TABLE} ====")
+        print(f"数据源: {INDUSTRY_SOURCE_TABLE}")
+        print(f"模式: {'全量重算' if full_recalc else '增量更新'}")
 
-        # 获取最新日期
-        latest_date_query = "SELECT MAX(date) as latest_date FROM industry_ths_index"
-        latest_date_df = pd.read_sql(latest_date_query, engine)
-        latest_date = latest_date_df.iloc[0]['latest_date']
-        
-        if latest_date is None:
-            print("未找到有效日期数据，请先更新industry_ths_index表")
-            return None
-            
-        print(f"最新数据日期: {latest_date}")
-        
-        # 获取该日期所有有数据的股票代码
-        industry_codes_query = f"""
-        SELECT DISTINCT industry_code 
-        FROM industry_ths_index 
-        WHERE date = '{latest_date}'
-        """
-        industry_codes_df = pd.read_sql(industry_codes_query, engine)
-        industry_codes = industry_codes_df['industry_code'].tolist()
-        
-        print(f"共找到 {len(industry_codes)} 只行业在 {latest_date} 有数据")
-        
-        if not industry_codes:
+        if industry_codes is None:
+            codes_query = text(f"""
+                SELECT DISTINCT industry_code FROM {INDUSTRY_SOURCE_TABLE} 
+                WHERE date = (SELECT MAX(date) FROM {INDUSTRY_SOURCE_TABLE})
+            """)
+            codes_df = pd.read_sql(codes_query, engine)
+            all_codes = set(codes_df["industry_code"].tolist())
+        else:
+            if isinstance(industry_codes, str):
+                industry_codes = [industry_codes]
+            all_codes = set(industry_codes)
+
+        if not all_codes:
             print("未找到任何行业数据")
             return None
-        
-        # 记录开始时间
+
+        if full_recalc:
+            print(f"执行全量重算，共 {len(all_codes)} 个行业")
+            recalc_codes = list(all_codes)
+            incremental_codes = []
+        else:
+            latest_df = pd.read_sql(
+                text(f"SELECT MAX(date) as latest_date FROM {INDUSTRY_SOURCE_TABLE}"),
+                engine,
+            )
+            latest_date = latest_df.iloc[0]["latest_date"]
+            if latest_date is None or pd.isna(latest_date):
+                print(f"未在 {INDUSTRY_SOURCE_TABLE} 中找到有效日期，请先更新；返回 None")
+                return None
+
+            print(f"最新数据日期: {latest_date}")
+            recalc_codes = []
+            incremental_codes = list(all_codes)
+
+        print(f"全量重算 {len(recalc_codes)} 个，增量更新 {len(incremental_codes)} 个")
+
         start_time = time.time()
-        
-        # 使用线程池执行任务
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
-            future_to_industry = {executor.submit(process_daily_industry_indicators, industry_code, latest_date): industry_code 
-                             for industry_code in industry_codes}
+        stats = {"recalc_ok": 0, "recalc_fail": 0,
+                 "incr_ok": 0, "incr_fail": 0}
+
+        if recalc_codes:
+            print(f"开始全量重算 {len(recalc_codes)} 个行业...")
+            recalc_workers = max(2, max_workers // 2)
             
-            # 收集结果
-            successful = 0
-            failed = 0
-            total_count = len(industry_codes)
+            all_results = []
+            with ThreadPoolExecutor(max_workers=recalc_workers) as ex:
+                future_map = {
+                    ex.submit(process_industry_indicators_recalc, c): c
+                    for c in recalc_codes
+                }
+                processed = 0
+                total = len(recalc_codes)
+                for fut in as_completed(future_map):
+                    code = future_map[fut]
+                    processed += 1
+                    try:
+                        code, rows = fut.result()
+                        all_results.append((code, rows))
+                        if rows is not None:
+                            print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，{len(rows)} 行", end="", flush=True)
+                        else:
+                            print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，无数据", end="", flush=True)
+                    except Exception as exc:
+                        print(f"\r[全量模式] 计算完成 {processed}/{total}：{code}，失败: {exc}", end="", flush=True)
+                        all_results.append((code, None))
+                print()
+            
+            print("开始串行写入数据库...")
             processed = 0
-            
-            for future in as_completed(future_to_industry):
-                industry_code = future_to_industry[future]
+            total = len(all_results)
+            for code, rows in sorted(all_results, key=lambda x: x[0]):
                 processed += 1
+                if rows is None:
+                    stats["recalc_fail"] += 1
+                    continue
                 try:
-                    result = future.result()
-                    if result:
-                        successful += 1
-                    else:
-                        failed += 1
+                    _bulk_insert_industry_rows(rows)
+                    stats["recalc_ok"] += 1
+                    print(f"\r[全量模式] 写入完成 {processed}/{total}：{code}，{len(rows)} 行", end="", flush=True)
                 except Exception as exc:
-                    print(f'行业 {industry_code} 处理时发生异常: {exc}')
-                    failed += 1
-                
-                # 打印进度（在同一行更新）
-                print(f"\r{processed}/{total_count} 行业 {industry_code} 处理完成", end="", flush=True)
-        
-        # 计算总耗时
+                    print(f"\r[全量模式] 写入完成 {processed}/{total}：{code}，失败: {exc}", end="", flush=True)
+                    stats["recalc_fail"] += 1
+            print()
+
+        if incremental_codes:
+            print(f"开始增量更新 {len(incremental_codes)} 个行业...")
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                future_map = {
+                    ex.submit(process_daily_industry_indicators, c, latest_date): c
+                    for c in incremental_codes
+                }
+                processed = 0
+                total = len(incremental_codes)
+                for fut in as_completed(future_map):
+                    code = future_map[fut]
+                    processed += 1
+                    try:
+                        row_count = fut.result()
+                        if row_count > 0:
+                            stats["incr_ok"] += 1
+                            print(f"\r[增量模式] 已完成 {processed}/{total}：{code} 成功，写入 {row_count} 行", end="", flush=True)
+                        else:
+                            stats["incr_fail"] += 1
+                    except Exception as exc:
+                        print(f"\r[增量模式] 已完成 {processed}/{total}：{code} 失败: {exc}", end="", flush=True)
+                        stats["incr_fail"] += 1
+                print()
+
         total_time = time.time() - start_time
-        
-        print(f"\n每日处理完成！日期: {latest_date}")
-        print(f"成功: {successful} 只股票")
-        print(f"失败: {failed} 只股票")
-        print(f"总耗时: {total_time:.2f} 秒")
-        print(f"平均每只行业: {total_time/len(industry_codes):.2f} 秒")
-        
-        return {
-            'successful': successful,
-            'failed': failed,
-            'total_time': total_time,
-            'average_time': total_time/len(industry_codes)
-        }
-        
+        print(f"\n每日处理完成！")
+        if not full_recalc:
+            print(f"日期: {latest_date}")
+        print("  全量重算:", stats["recalc_ok"], "成功，", stats["recalc_fail"], "失败")
+        print("  增量更新:", stats["incr_ok"], "成功，", stats["incr_fail"], "失败")
+        print(f"  总耗时: {total_time:.2f} 秒")
+
+        return stats
+
     except Exception as e:
         print(f"每日处理过程中出现错误: {str(e)}")
         raise
@@ -847,29 +929,28 @@ def daily_process_industry_indicators(max_workers=10):
 if __name__ == "__main__":
     # -------------------- 个股指标计算 --------------------
 
-    # 全量数据计算
-    # all_stock_query = f"""
-    #  SELECT DISTINCT stock_code FROM stock_daily_qfq WHERE date = (select MAX(date) from stock_daily_qfq) 
-    # """
-    # all_stock_df = pd.read_sql(all_stock_query, engine)
-    # all_stock = all_stock_df['stock_code'].tolist()
-    
-    # # 测试多线程批量计算
-    # calculate_stock_indicators_multithreaded(all_stock, max_workers=10)
-    
-    # 测试每日处理功能
-    daily_process_stock_indicators(max_workers=10)
+    # 示例1: 每日增量更新（默认模式）
+    # daily_process_stock_indicators(max_workers=10)
+
+    # 示例2: 全量重算所有股票（覆盖表全部数据）
+    # daily_process_stock_indicators(max_workers=10, full_recalc=True)
+
+    # 示例3: 全量重算指定股票
+    daily_process_stock_indicators(max_workers=10, full_recalc=True, stock_codes=["600228"])
+
+    # # 默认执行每日增量更新
+    # daily_process_stock_indicators(max_workers=10)
 
     # -------------------- 行业指标计算 --------------------
 
-    # 全量数据计算
-    # all_stock_query = f"""
-    #  SELECT DISTINCT industry_code FROM industry_ths_index WHERE date = (select MAX(date) from industry_ths_index) 
-    # """
-    # all_stock_df = pd.read_sql(all_stock_query, engine)
-    # all_stock = all_stock_df['industry_code'].tolist()
-    
-    # 测试多线程批量计算
-    # calculate_industry_indicators_multithreaded(all_stock, max_workers=10)
+    # 示例1: 每日增量更新（默认模式）
+    # daily_process_industry_indicators(max_workers=10)
 
-    daily_process_industry_indicators(max_workers=10)
+    # 示例2: 全量重算所有行业（覆盖表全部数据）
+    # daily_process_industry_indicators(max_workers=10, full_recalc=True)
+
+    # 示例3: 全量重算指定行业
+    # daily_process_industry_indicators(max_workers=10, full_recalc=True, industry_codes=["SW101", "SW102"])
+
+    # # 默认执行每日增量更新
+    # daily_process_industry_indicators(max_workers=10)
