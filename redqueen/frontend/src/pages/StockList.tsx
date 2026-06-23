@@ -1445,7 +1445,7 @@ const StockList: React.FC = () => {
                 <Table
                   columns={columns}
                   dataSource={filteredStocks}
-                  rowKey="stock_code"
+                  rowKey={(record: any) => `${record.stock_code}-${record.date}`}
                   loading={loading}
                   pagination={{ pageSize: 20 }}
                   size="small"

@@ -1,8 +1,35 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Card, Button, message, Tooltip } from 'antd';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Card, Button, message, Tooltip, Drawer, Table, Typography } from 'antd';
 import { CalendarOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
 import { getHeatmapData, getLatestTradingDay } from '../api/api';
+import type { ColumnType } from 'antd/es/table';
+
+const { Text } = Typography;
+
+/**
+ * 配色刻度 bin（单个条段）数据结构
+ */
+interface ColorScaleBin {
+  /** bin 的左边界（包含），例如 0.08 表示 >=8% */
+  lower: number;
+  /** bin 的右边界（不包含），例如 0.12 表示 <12% */
+  upper: number;
+  /** 该 bin 内包含的股票数量 */
+  count: number;
+  /** 占总数百分比，用于控制显示宽度：0~1 */
+  percent: number;
+  /** 段背景颜色（RGB 字符串） */
+  color: string;
+  /** 段标签：显示为右边界值（12%） */
+  label: string;
+  /** 段中点涨跌幅（取反用于颜色映射） */
+  midpoint: number;
+  /** 该段内包含的股票列表（点击时用于展示） */
+  stocks: StockData[];
+  /** 该段内所有股票的平均涨跌幅 */
+  avgChangePct: number;
+}
 
 interface StockData {
   industry_code: string;
@@ -12,6 +39,11 @@ interface StockData {
   market_cap_r: number | null;
   change_pct: number | null;
   industry_change_pct: number | null;
+  close: number | null;
+  turnover: number | null;
+  volume_pct: number | null;
+  growth_streak_days: number | null;
+  growth_streak_pct: number | null;
 }
 
 interface TreemapData {
@@ -35,6 +67,10 @@ const Heatmap: React.FC = () => {
   const [data, setData] = useState<StockData[]>([]);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [chartInstance, setChartInstance] = useState<echarts.ECharts | null>(null);
+
+  // 抽屉相关状态
+  const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
+  const [selectedBin, setSelectedBin] = useState<ColorScaleBin | null>(null);
 
   useEffect(() => {
     loadLatestTradingDay();
@@ -115,6 +151,182 @@ const Heatmap: React.FC = () => {
 
       return `rgb(${r}, ${g}, ${b})`;
     }
+  };
+
+  /**
+   * 计算指定排序数组的分位数（线性插值法）
+   * @param sortedVals 已升序排序的数值数组
+   * @param q 分位点，0~1，例如 0.5 = 中位数
+   */
+  const quantile = (sortedVals: number[], q: number): number => {
+    if (sortedVals.length === 0) return 0;
+    if (sortedVals.length === 1) return sortedVals[0];
+    const pos = (sortedVals.length - 1) * q;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    if (idx + 1 >= sortedVals.length) return sortedVals[sortedVals.length - 1];
+    return sortedVals[idx] + frac * (sortedVals[idx + 1] - sortedVals[idx]);
+  };
+
+  /**
+   * 配色刻度段颜色：绿 → 白 → 红 平滑过渡
+   *
+   * 设计要点（相对于 getColor 的差异）：
+   *   - 配色刻度显示在浅色（或白色）背景上，与 HeatMap（深色背景）不同
+   *   - 因此采用：绿 → 白 → 红 的对称渐变（而非绿 → 深灰 → 红）
+   *   - 取 |midpoint| / maxAbs 做归一化，避免极端值导致颜色过饱和
+   *   - 白色 = "无色/中性"，对应 midpoint = 0
+   *
+   * @param midpoint 该刻度段中点的涨跌幅（小数，0.01 = 1%）
+   * @param maxAbs 当前数据最大绝对值（用于归一化，避免极端值过饱和）
+   * @returns rgb(r, g, b) 字符串
+   */
+  const getLegendColor = (midpoint: number, maxAbs: number): string => {
+    // 归一化强度：0~1，clamp 上限为 0.3（即 30% 对应最深色）
+    const t = maxAbs > 0 ? Math.min(Math.abs(midpoint) / Math.max(maxAbs, 0.005), 1) : 0;
+    // 绿/红通道分别填充
+    if (midpoint < 0) {
+      // 下跌：白色 → 深绿
+      //   r: 255 → 20,  g: 255 → 150, b: 255 → 40  （取更"亮绿"的偏绿）
+      const r = Math.round(255 + t * (40 - 255));
+      const g = Math.round(255 + t * (180 - 255));
+      const b = Math.round(255 + t * (70 - 255));
+      return `rgb(${r}, ${g}, ${b})`;
+    } else {
+      // 上涨：白色 → 深红
+      const r = Math.round(255 + t * (200 - 255));
+      const g = Math.round(255 + t * (40 - 255));
+      const b = Math.round(255 + t * (60 - 255));
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+  };
+
+  /**
+   * 基于个股涨跌幅计算 10 段配色刻度
+   *
+   * 算法说明（正负分区，共 10 段）：
+   *   1. 取所有 stock.change_pct（已过滤 null），得到 [dataMin, dataMax]
+   *   2. 将 [dataMin, 0] 做 **5 段均匀等分**（下跌刻度）
+   *      将 [0, dataMax] 做 **5 段均匀等分**（上涨刻度）
+   *      - 左闭右开：段 i = [ lower_i, upper_i )
+   *      - 最后一段 = [ lower_9, upper_9 ]，闭右端（包含最大值）
+   *      - 若 dataMin = 0（无下跌），则 [0, dataMax] 做 10 段均分
+   *      - 若 dataMax = 0（无上涨），则 [dataMin, 0] 做 10 段均分
+   *   3. 统计每段内股票数量 count_i
+   *   4. 段**宽度** = count_i / total（体现"该涨跌区间聚集了多少只股票"，宽=密集）
+   *   5. 段**颜色** = 基于段中点值 midpoint 做绿→白→红渐变（通过 getLegendColor）
+   *   6. 段**标签** = 右边界值（例如 12%，表示该段覆盖 [x%, 12%)）
+   *
+   * 关键点：刻度边界以 0 为中心，左右对称分区；段宽度反映股票数密度。
+   *
+   * @param stockData 原始股票数据
+   * @returns ColorScaleBin[]（固定 10 段）
+   */
+  const computeQuantileColorScale = (stockData: StockData[]): ColorScaleBin[] => {
+    const NUM_BINS = 10;
+
+    // 1) 提取有效涨跌幅
+    const values: number[] = [];
+    for (const s of stockData) {
+      if (
+        s.change_pct !== null &&
+        s.change_pct !== undefined &&
+        Number.isFinite(s.change_pct)
+      ) {
+        values.push(s.change_pct);
+      }
+    }
+
+    // 空数据保护：返回 10 段灰色占位
+    if (values.length === 0) {
+      return Array.from({ length: NUM_BINS }, (_, i) => ({
+        lower: i * 0.001,
+        upper: (i + 1) * 0.001,
+        count: 0,
+        percent: 1 / NUM_BINS,
+        color: 'rgb(240, 240, 240)',
+        label: `${((i + 1) * 0.1).toFixed(1)}%`,
+        midpoint: (i + 0.5) * 0.001,
+        stocks: [],
+        avgChangePct: 0
+      }));
+    }
+
+    const total = values.length;
+    const dataMin = Math.min.apply(null, values);
+    const dataMax = Math.max.apply(null, values);
+    const maxAbs = Math.max(Math.abs(dataMin), Math.abs(dataMax));
+    const span = dataMax - dataMin;
+
+    // 2) 以 0 为中心，分 [dataMin, 0] 和 [0, dataMax] 两个半区各 5 段，共 10 段
+    //    - 若 dataMin >= 0（无下跌股票），则整个区间 [0, dataMax] 均分 10 段
+    //    - 若 dataMax <= 0（无上涨股票），则整个区间 [dataMin, 0] 均分 10 段
+    //    - 若 dataMin == dataMax == 0（全持平），则人为扩展 ±0.01
+    const boundaries: number[] = [];
+    const NEG_BINS = 5;
+    const POS_BINS = 5;
+
+    if (span === 0) {
+      // 所有股票涨跌幅相同：人为扩展一个小区间以保证刻度可见
+      const center = dataMin;
+      const half = Math.max(Math.abs(center) * 0.05, 0.005);
+      for (let i = 0; i <= NUM_BINS; i++) {
+        boundaries.push(center - half + (2 * half * i) / NUM_BINS);
+      }
+    } else if (dataMin >= 0) {
+      // 全为上涨或持平：[0, dataMax] 均分成 10 段
+      for (let i = 0; i <= NUM_BINS; i++) {
+        boundaries.push((dataMax * i) / NUM_BINS);
+      }
+    } else if (dataMax <= 0) {
+      // 全为下跌或持平：[dataMin, 0] 均分成 10 段
+      for (let i = 0; i <= NUM_BINS; i++) {
+        boundaries.push(dataMin + ((0 - dataMin) * i) / NUM_BINS);
+      }
+    } else {
+      // 有涨有跌：左半区 5 段 + 右半区 5 段
+      // 左半区 5 段 [dataMin, 0]
+      for (let i = 0; i <= NEG_BINS; i++) {
+        boundaries.push(dataMin + ((0 - dataMin) * i) / NEG_BINS);
+      }
+      // 右半区 5 段 [0, dataMax]，注意跳过重复的 0 点
+      for (let i = 1; i <= POS_BINS; i++) {
+        boundaries.push((dataMax * i) / POS_BINS);
+      }
+    }
+
+    // 3) 对每段统计落入 [lower, upper) 的股票数和股票列表（最后一段含最大值）
+    const bins: ColorScaleBin[] = [];
+    for (let i = 0; i < NUM_BINS; i++) {
+      const lower = boundaries[i];
+      const upper = i === NUM_BINS - 1 ? boundaries[i + 1] + 1e-9 : boundaries[i + 1];
+      const isLastBin = i === NUM_BINS - 1;
+
+      const stocks: StockData[] = [];
+      for (const s of stockData) {
+        const v = s.change_pct;
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        if (isLastBin ? (v >= lower && v <= upper) : (v >= lower && v < upper)) {
+          stocks.push(s);
+        }
+      }
+
+      const count = stocks.length;
+      const percent = total > 0 ? count / total : 1 / NUM_BINS;
+      const midpoint = (lower + upper) / 2;
+      const color = getLegendColor(midpoint, maxAbs);
+      const labelPct = upper * 100;
+      const label = `${labelPct.toFixed(0)}%`;
+
+      // 计算该段内股票的平均涨跌幅
+      const avgChangePct = count > 0
+        ? stocks.reduce((sum, s) => sum + (s.change_pct || 0), 0) / count
+        : 0;
+
+      bins.push({ lower, upper, count, percent, color, label, midpoint, stocks, avgChangePct });
+    }
+
+    return bins;
   };
 
   /**
@@ -522,6 +734,14 @@ const Heatmap: React.FC = () => {
     }
   }, [date1, date2]);
 
+  /**
+   * 配色刻度：基于当前 data 计算
+   * - data 变更 → 自动重新计算
+   * - 固定 10 段，分位数边界
+   * - 段宽度反映该区间内股票数占比
+   */
+  const colorScaleBins = useMemo(() => computeQuantileColorScale(data), [data]);
+
   const fetchHeatmapData = async () => {
     if (!date1 || !date2) {
       return;
@@ -572,12 +792,341 @@ const Heatmap: React.FC = () => {
         >
           查询
         </Button>
+
+        {/*
+         * 热力图配色刻度条：
+         * - 固定 10 段，每段按分位数分配边界
+         * - 段宽度 = 段内股票数 / 总数（体现该区间聚集度）
+         * - 颜色：绿（跌）→ 白（中性） → 红（涨）
+         * - 段标签显示其右边界值（如 12%），表示该段覆盖 [lower, 12%)
+         */}
+        {colorScaleBins.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              marginLeft: 12,
+              flex: 1,
+              minWidth: 280,
+              maxWidth: 1000
+            }}
+          >
+            <span style={{ fontSize: 12, color: '#000', whiteSpace: 'nowrap' }}>
+              <InfoCircleOutlined style={{ marginRight: 4, color: '#1890ff' }} />
+              配色刻度
+            </span>
+            {/*
+             * 条段主体：10 段并排（flex 布局，每段宽度 = percent × 总长）
+             * - 最小段宽：每段至少 2%，避免零股票段完全消失
+             * - 规范化：加了最小宽度后若总和 > 100%，按比例重新分配，保证总宽不超过容器
+             * - 总容器最大宽度 520px，避免在宽屏上过度拉伸
+             */}
+            <div
+              style={{
+                display: 'flex',
+                width: '100%',
+                maxWidth: 1000,
+                height: 32,
+                border: '1px solid #e8e8e8',
+                borderRadius: 4,
+                overflow: 'hidden',
+                background: '#fff'
+              }}
+            >
+              {(() => {
+                // 最小段宽占比（%）
+                const MIN_WIDTH_PCT = 8;
+                // 先计算带最小宽度保护的原始宽度
+                const rawWidths = colorScaleBins.map((bin) =>
+                  Math.max(bin.percent * 100, MIN_WIDTH_PCT)
+                );
+                const rawTotal = rawWidths.reduce((a, b) => a + b, 0);
+                // 若总和 > 100%，按比例收缩；否则保持原宽（右侧留白）
+                const widths = rawTotal > 100
+                  ? rawWidths.map((w) => (w / rawTotal) * 100)
+                  : rawWidths;
+
+                return colorScaleBins.map((bin, idx) => {
+                  const widthPct = widths[idx];
+                  const rangeText = `[${(bin.lower * 100).toFixed(2)}%, ${(bin.upper * 100).toFixed(2)}%)`;
+                return (
+                  <Tooltip
+                    key={idx}
+                    title={
+                      <div style={{ lineHeight: 1.8 }}>
+                        <div>
+                          <strong>区间：</strong>
+                          {rangeText}
+                          {idx === colorScaleBins.length - 1 ? '（含最大值）' : ''}
+                        </div>
+                        <div>
+                          <strong>股票数：</strong>
+                          {bin.count} 只（占 {((bin.count / Math.max(data.length, 1)) * 100).toFixed(1)}%）
+                        </div>
+                        <div>
+                          <strong>中点涨跌幅：</strong>
+                          <span style={{ color: bin.midpoint >= 0 ? '#ef232a' : '#11c26d', fontWeight: 'bold' }}>
+                            {bin.midpoint >= 0 ? '+' : ''}{(bin.midpoint * 100).toFixed(2)}%
+                          </span>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div
+                      style={{
+                        width: `${widthPct}%`,
+                        background: bin.color,
+                        position: 'relative',
+                        height: '100%',
+                        borderLeft: idx === 0 ? 'none' : '1px solid rgba(255,255,255,0.6)',
+                        cursor: 'pointer'
+                      }}
+                      title={bin.label}
+                      onClick={() => {
+                        setSelectedBin(bin);
+                        setDrawerVisible(true);
+                      }}
+                    >
+                      {/* 段内标签：仅当宽度足够时才显示右边界值（段宽 > 5% 才显示文字） */}
+                      {widthPct > 0 && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '50%',
+                            left: 0,
+                            right: 0,
+                            transform: 'translateY(-50%)',
+                            fontSize: 12,
+                            color: '#000',
+                            textAlign: 'center',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            padding: '0 2px',
+                            fontWeight: 500
+                          }}
+                        >
+                          {bin.label}
+                        </div>
+                      )}
+                    </div>
+                  </Tooltip>
+                );
+              });
+            })()}
+            </div>
+          </div>
+        )}
       </div>
 
       <div
         ref={chartContainerRef}
         style={{ flex: 1, minHeight: 'calc(100vh - 150px)', width: '100%', position: 'relative' }}
       />
+
+      {/* 抽屉：展示刻度区间内的个股信息 */}
+      <Drawer
+        title={
+          selectedBin ? `涨跌幅区间 ${selectedBin.label}（数据日期 ${date2}）` : '刻度详情'
+        }
+        placement="right"
+        closable={true}
+        onClose={() => {
+          setDrawerVisible(false);
+          setSelectedBin(null);
+        }}
+        open={drawerVisible}
+        width={1000}
+      >
+        {selectedBin && (
+          <>
+            {/* 刻度基本信息：标题和数据同行显示 */}
+            <div
+              style={{
+                background: '#f5f5f5',
+                padding: 16,
+                borderRadius: 8,
+                marginBottom: 16,
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 24,
+                fontSize: 13
+              }}
+            >
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>区间范围</strong>
+                <span style={{ fontWeight: 'bold' }}>
+                  [{(selectedBin.lower * 100).toFixed(2)}%, {(selectedBin.upper * 100).toFixed(2)}%)
+                  {selectedBin.midpoint >= 0 ? '（上涨）' : '（下跌）'}
+                </span>
+              </span>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>个股数量 & 占比</strong>
+                <span style={{ fontWeight: 'bold' }}>
+                  {selectedBin.count} 只（{(selectedBin.percent * 100).toFixed(1)}%）
+                </span>
+              </span>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>中点涨跌幅</strong>
+                <Text
+                  style={{
+                    color: selectedBin.midpoint >= 0 ? '#ef232a' : '#11c26d',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {selectedBin.midpoint >= 0 ? '+' : ''}
+                  {(selectedBin.midpoint * 100).toFixed(2)}%
+                </Text>
+              </span>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>平均涨跌幅</strong>
+                <Text
+                  style={{
+                    color: selectedBin.avgChangePct >= 0 ? '#ef232a' : '#11c26d',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {selectedBin.avgChangePct >= 0 ? '+' : ''}
+                  {(selectedBin.avgChangePct * 100).toFixed(2)}%
+                </Text>
+              </span>
+            </div>
+
+            {/* 个股列表：宽度不超过容器 */}
+            <div style={{ width: '100%', overflow: 'hidden' }}>
+              <Table
+                size="small"
+                dataSource={selectedBin.stocks}
+                pagination={{
+                  pageSize: 15,
+                  showSizeChanger: true,
+                  showTotal: (total) => `共 ${total} 只`
+                }}
+                scroll={{ x: 'max-content' }}
+                columns={[
+                  {
+                    title: 'Code',
+                    dataIndex: 'stock_code',
+                    key: 'stock_code',
+                    width: 80,
+                    align: 'center'
+                  },
+                  {
+                    title: 'Name',
+                    dataIndex: 'stock_name',
+                    key: 'stock_name',
+                    width: 80,
+                    align: 'center'
+                  },
+                  {
+                    title: 'Industry',
+                    dataIndex: 'industry_name',
+                    key: 'industry_name',
+                    width: 80,
+                    align: 'center',
+                    ellipsis: true,
+                    render: (text: string) => text || '未知'
+                  },
+                  {
+                    title: 'Close',
+                    dataIndex: 'close',
+                    key: 'close',
+                    width: 80,
+                    align: 'right',
+                    render: (text: number) =>
+                      typeof text === 'number' ? text.toFixed(2) : '0.00'
+                  },
+                  {
+                    title: 'Chg%',
+                    dataIndex: 'change_pct',
+                    key: 'change_pct',
+                    width: 80,
+                    align: 'right',
+                    render: (text: number) => {
+                      const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+                      return (
+                        <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+                          {value >= 0 ? '+' : ''}
+                          {(value * 100).toFixed(2)}
+                        </Text>
+                      );
+                    }
+                  },
+                  {
+                    title: 'Turnover%',
+                    dataIndex: 'turnover',
+                    key: 'turnover',
+                    width: 90,
+                    align: 'right',
+                    render: (text: number) =>
+                      typeof text === 'number' ? text.toFixed(2) : '-'
+                  },
+                  {
+                    title: 'Volume%',
+                    dataIndex: 'volume_pct',
+                    key: 'volume_pct',
+                    width: 90,
+                    align: 'right',
+                    render: (text: number) => {
+                      const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+                      if (!Number.isFinite(value)) return '-';
+                      return (
+                        <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+                          {value >= 0 ? '+' : ''}
+                          {value.toFixed(2)}
+                        </Text>
+                      );
+                    }
+                  },
+                  {
+                    title: 'Days',
+                    dataIndex: 'growth_streak_days',
+                    key: 'growth_streak_days',
+                    width: 60,
+                    align: 'center',
+                    render: (text: number) => (text || 0).toString()
+                  },
+                  {
+                    title: 'Days%',
+                    dataIndex: 'growth_streak_pct',
+                    key: 'growth_streak_pct',
+                    width: 80,
+                    align: 'right',
+                    render: (text: number) => {
+                      const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+                      if (!Number.isFinite(value)) return '-';
+                      return (
+                        <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+                          {value >= 0 ? '+' : ''}
+                          {value.toFixed(2)}
+                        </Text>
+                      );
+                    }
+                  },
+                  {
+                    title: 'Period%',
+                    key: 'period_pct',
+                    width: 80,
+                    align: 'right',
+                    render: (_: any, record: StockData) => {
+                      const value = typeof record.change_pct === 'number' ? record.change_pct : 0;
+                      if (!Number.isFinite(value)) return '-';
+                      return (
+                        <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+                          {value >= 0 ? '+' : ''}
+                          {(value * 100).toFixed(1)}
+                        </Text>
+                      );
+                    }
+                  }
+                ]}
+                rowKey="stock_code"
+              />
+            </div>
+          </>
+        )}
+      </Drawer>
     </div>
   );
 };

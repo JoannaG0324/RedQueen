@@ -619,18 +619,24 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                     THEN s2.amount / (s2.turnover / 100) * 1.2 
                     ELSE NULL 
                 END as market_cap_r,
-                # 计算个股区间涨跌幅
-                CASE 
-                    WHEN s1.close IS NOT NULL AND s1.close > 0 AND s2.close IS NOT NULL 
-                    THEN (s2.close / s1.close) - 1 
-                    ELSE NULL 
-                END as change_pct,
+                # 区间结束日期单日涨跌幅（change_rate 为百分比形式，如 3.5 表示 +3.5%）
+                s2.change_rate / 100 as change_pct,
                 # 计算行业区间涨跌幅（基于行业指数）
                 CASE 
                     WHEN i1.close IS NOT NULL AND i1.close > 0 AND i2.close IS NOT NULL 
                     THEN (i2.close / i1.close) - 1 
                     ELSE NULL 
-                END as industry_change_pct
+                END as industry_change_pct,
+                # 区间结束日期收盘价
+                s2.close as close,
+                # 区间结束日期换手率
+                s2.turnover as turnover,
+                # 成交量变化（从 stock_daily_qfq_calc 表直接获取）
+                sdqc.volume_pct as volume_pct,
+                # 连续增长天数
+                COALESCE(sdqc.growth_streak_days, 0) as growth_streak_days,
+                # 连续增长累计涨幅
+                COALESCE(sdqc.growth_streak_pct, 0) as growth_streak_pct
             FROM industry_ths it
             JOIN industry_ths_stock its ON it.industry_code = its.industry_code
             LEFT JOIN stock_daily_analysis s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
@@ -644,6 +650,7 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
             ) s ON its.stock_code = s.stock_code
             LEFT JOIN industry_ths_index i1 ON it.industry_code = i1.industry_code AND i1.date = :date1
             LEFT JOIN industry_ths_index i2 ON it.industry_code = i2.industry_code AND i2.date = :date2
+            LEFT JOIN stock_daily_qfq_calc sdqc ON its.stock_code = sdqc.stock_code AND sdqc.date = :date2
             WHERE it.flag = 1
             # 过滤异常数据
             AND (s2.turnover IS NULL OR s2.turnover > 0)
@@ -666,7 +673,12 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 "stock_name": row[3],
                 "market_cap_r": float(row[4]) if row[4] else None,
                 "change_pct": float(row[5]) if row[5] else None,
-                "industry_change_pct": float(row[6]) if row[6] else None
+                "industry_change_pct": float(row[6]) if row[6] else None,
+                "close": float(row[7]) if row[7] else None,
+                "turnover": float(row[8]) if row[8] else None,
+                "volume_pct": float(row[9]) if row[9] else None,
+                "growth_streak_days": int(row[10]) if row[10] else None,
+                "growth_streak_pct": float(row[11]) if row[11] else None
             })
         
         return heatmap_data
