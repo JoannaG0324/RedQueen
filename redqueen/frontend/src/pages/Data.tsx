@@ -78,6 +78,15 @@ const Data: React.FC = () => {
       requiresDate: true // 需要日期选择
     },
     {
+      id: 'write_data_task',
+      name: '【数据写入】写入主表',
+      description: '将指定日期的数据依次写入 stock_daily_qfq 和 stock_daily_analysis',
+      isSelected: false,
+      status: 'idle',
+      result: '',
+      requiresDate: true // 需要日期选择
+    },
+    {
       id: 'init_qfq_mark_scan_incremental',
       name: '【前复权数据】扫描(增量)',
       description: '对 stock_daily_qfq 全部个股的最新日 vs 前一日做一次跳空/除权判定，写入 stock_qfq_mark',
@@ -213,6 +222,7 @@ const Data: React.FC = () => {
         // 数据检查任务
         const dataCheckTaskIds = [
           'duplicate_check',
+          'write_data_task',
           'init_qfq_mark_scan_incremental',
           'fetch_kline_to_analysis'
         ];
@@ -285,7 +295,7 @@ const Data: React.FC = () => {
           params: {
             task_id: task.id,
             page: task.id === 'update_stock_daily_backup' ? page : undefined,
-            target_date: task.id === 'duplicate_check' ? targetDate : undefined,
+            target_date: ['duplicate_check', 'write_data_task'].includes(task.id) ? targetDate : undefined,
             data_source: task.id === 'fetch_kline_to_analysis' ? dataSource : undefined
           }
         });
@@ -472,6 +482,7 @@ const Data: React.FC = () => {
           {/* 数据检查任务列表 */}
           {tasks.filter(task => [
             'duplicate_check',
+            'write_data_task',
             'init_qfq_mark_scan_incremental',
             'fetch_kline_to_analysis'
           ].includes(task.id)).map(task => (

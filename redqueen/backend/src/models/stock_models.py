@@ -130,4 +130,5 @@ class StockFavorite(Base):
     stock_code = Column(String(20), primary_key=True, nullable=False, index=True)
     price_date = Column(Date, nullable=False)
     status = Column(Integer, nullable=False, default=1)
+    tag = Column(String(20), nullable=True, default=None)
     updated_time = Column(DateTime, nullable=False, server_default=func.now())

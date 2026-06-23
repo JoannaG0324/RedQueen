@@ -619,8 +619,14 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                     THEN s2.amount / (s2.turnover / 100) * 1.2 
                     ELSE NULL 
                 END as market_cap_r,
+                # 区间涨跌幅（从 date1 到 date2 的涨跌幅）
+                CASE 
+                    WHEN s1.close IS NOT NULL AND s1.close > 0 AND s2.close IS NOT NULL 
+                    THEN (s2.close / s1.close) - 1 
+                    ELSE NULL 
+                END as period_pct,
                 # 区间结束日期单日涨跌幅（change_rate 为百分比形式，如 3.5 表示 +3.5%）
-                s2.change_rate / 100 as change_pct,
+                s2.change_rate as change_pct,
                 # 计算行业区间涨跌幅（基于行业指数）
                 CASE 
                     WHEN i1.close IS NOT NULL AND i1.close > 0 AND i2.close IS NOT NULL 
@@ -672,13 +678,14 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 "stock_code": row[2],
                 "stock_name": row[3],
                 "market_cap_r": float(row[4]) if row[4] else None,
-                "change_pct": float(row[5]) if row[5] else None,
-                "industry_change_pct": float(row[6]) if row[6] else None,
-                "close": float(row[7]) if row[7] else None,
-                "turnover": float(row[8]) if row[8] else None,
-                "volume_pct": float(row[9]) if row[9] else None,
-                "growth_streak_days": int(row[10]) if row[10] else None,
-                "growth_streak_pct": float(row[11]) if row[11] else None
+                "period_pct": float(row[5]) if row[5] else None,
+                "change_pct": float(row[6]) if row[6] else None,
+                "industry_change_pct": float(row[7]) if row[7] else None,
+                "close": float(row[8]) if row[8] else None,
+                "turnover": float(row[9]) if row[9] else None,
+                "volume_pct": float(row[10]) if row[10] else None,
+                "growth_streak_days": int(row[11]) if row[11] else None,
+                "growth_streak_pct": float(row[12]) if row[12] else None
             })
         
         return heatmap_data
@@ -1076,6 +1083,82 @@ async def execute_data_task(task_id: str, page: str = "1", target_date: str = No
                 "affected_groups": 0,
                 "execution_time": datetime.now().isoformat(),
             }
+        elif task_id == "write_data_task":
+            from sqlalchemy import text as sql_text
+
+            write_date = target_date
+            if write_date is None or str(write_date).strip() == "":
+                try:
+                    with db.begin():
+                        row = db.execute(
+                            sql_text("SELECT MAX(date) FROM stock_daily_qfq_new")
+                        ).scalar()
+                    if row is not None:
+                        write_date = str(row)
+                    else:
+                        write_date = datetime.now().strftime("%Y-%m-%d")
+                except Exception:
+                    write_date = datetime.now().strftime("%Y-%m-%d")
+
+            print(f"开始执行 write_data_task（数据写入主表）任务，日期 = {write_date}")
+
+            write_qfq_sql = sql_text("""
+                INSERT INTO stock_daily_qfq (
+                    stock_code, stock_name, date, open, close, high, low,
+                    volume, amount, amplitude, change_rate, change_amount, turnover
+                )
+                SELECT
+                    stock_code, stock_name, date, open, close, high, low,
+                    volume, amount, amplitude, change_rate, change_amount, turnover
+                FROM stock_daily_qfq_new
+                WHERE date = :write_date
+            """)
+
+            write_analysis_sql = sql_text("""
+                INSERT INTO stock_daily_analysis (
+                    stock_code, stock_name, date, open, close, high, low,
+                    volume, amount, amplitude, change_rate, change_amount, turnover
+                )
+                SELECT
+                    stock_code, stock_name, date, open, close, high, low,
+                    volume, amount, amplitude, change_rate, change_amount, turnover
+                FROM stock_daily_qfq
+                WHERE date = :write_date
+            """)
+
+            try:
+                with db.begin():
+                    qfq_result = db.execute(write_qfq_sql, {"write_date": write_date})
+                    qfq_rows = qfq_result.rowcount if hasattr(qfq_result, 'rowcount') else 0
+
+                print(f"已将 {qfq_rows} 条数据写入 stock_daily_qfq")
+
+                with db.begin():
+                    analysis_result = db.execute(write_analysis_sql, {"write_date": write_date})
+                    analysis_rows = analysis_result.rowcount if hasattr(analysis_result, 'rowcount') else 0
+
+                print(f"已将 {analysis_rows} 条数据写入 stock_daily_analysis")
+
+                message = (
+                    f"数据写入完成，日期 {write_date}："
+                    f"stock_daily_qfq 写入 {qfq_rows} 条，"
+                    f"stock_daily_analysis 写入 {analysis_rows} 条"
+                )
+
+                result = {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "message": message,
+                    "write_date": write_date,
+                    "qfq_rows_written": qfq_rows,
+                    "analysis_rows_written": analysis_rows,
+                    "execution_time": datetime.now().isoformat(),
+                }
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"数据写入失败: {str(e)}"
+                )
         else:
             # 模拟执行其他任务
             import time
@@ -1136,6 +1219,7 @@ async def get_favorite_list(db: Session = Depends(get_db)):
                 "stock_code": r.stock_code,
                 "price_date": r.price_date.isoformat() if r.price_date else None,
                 "status": r.status,
+                "tag": r.tag,
                 "updated_time": r.updated_time.isoformat() if r.updated_time else None,
             }
             for r in rows
@@ -1150,11 +1234,12 @@ async def get_favorite_one(stock_code: str, db: Session = Depends(get_db)):
     try:
         row = db.query(StockFavorite).filter(StockFavorite.stock_code == stock_code).first()
         if not row:
-            return {"stock_code": stock_code, "status": 0, "price_date": None, "updated_time": None}
+            return {"stock_code": stock_code, "status": 0, "price_date": None, "tag": None, "updated_time": None}
         return {
             "stock_code": row.stock_code,
             "price_date": row.price_date.isoformat() if row.price_date else None,
             "status": row.status,
+            "tag": row.tag,
             "updated_time": row.updated_time.isoformat() if row.updated_time else None,
         }
     except Exception as e:
@@ -1172,13 +1257,17 @@ async def upsert_favorite(
     首次收藏时插入新记录；对同一只股票的后续操作按主键更新：
     - status=1 收藏时更新 price_date 与 updated_time
     - status=0 取消收藏时仅更新 status 和 updated_time，不覆盖 price_date
+    - tag 字段默认为空，可输入20字以内文本
     """
     from datetime import datetime as _dt
     try:
         price_date_raw = payload.get("price_date")
         status = payload.get("status")
+        tag = payload.get("tag", "")
         if status is None or status not in (0, 1):
             raise HTTPException(status_code=400, detail="参数 status 必须为 0 或 1")
+        if tag and len(tag) > 20:
+            raise HTTPException(status_code=400, detail="tag 长度不能超过20个字符")
         price_date = None
         if price_date_raw:
             try:
@@ -1195,6 +1284,7 @@ async def upsert_favorite(
                 stock_code=stock_code,
                 price_date=price_date,
                 status=status,
+                tag=tag or None,
                 updated_time=now,
             )
             db.add(new_row)
@@ -1204,6 +1294,7 @@ async def upsert_favorite(
                 "stock_code": new_row.stock_code,
                 "price_date": new_row.price_date.isoformat() if new_row.price_date else None,
                 "status": new_row.status,
+                "tag": new_row.tag,
                 "updated_time": new_row.updated_time.isoformat() if new_row.updated_time else None,
                 "action": "insert",
             }
@@ -1212,12 +1303,15 @@ async def upsert_favorite(
             row.updated_time = now
             if status == 1 and price_date is not None:
                 row.price_date = price_date
+            if tag is not None:
+                row.tag = tag or None
             db.commit()
             db.refresh(row)
             return {
                 "stock_code": row.stock_code,
                 "price_date": row.price_date.isoformat() if row.price_date else None,
                 "status": row.status,
+                "tag": row.tag,
                 "updated_time": row.updated_time.isoformat() if row.updated_time else None,
                 "action": "update",
             }

@@ -23,6 +23,35 @@ const matchMarket = (stockCode: string, selectedMarkets: string[]): boolean => {
   });
 };
 
+const colorPalette = [
+  { bg: '#fff7e6', border: '#ffd591', text: '#d46b08' },
+  { bg: '#e6f7ff', border: '#91d5ff', text: '#08979c' },
+  { bg: '#f6ffed', border: '#b7eb8f', text: '#389e0d' },
+  { bg: '#fff0f6', border: '#ffadd2', text: '#c41d7f' },
+  { bg: '#fff1f0', border: '#ffa39e', text: '#cf1322' },
+  { bg: '#f0f5ff', border: '#adc6ff', text: '#1890ff' },
+  { bg: '#ffe7ba', border: '#ffc53d', text: '#d48806' },
+  { bg: '#f9f0ff', border: '#d3adf7', text: '#722ed1' },
+  { bg: '#fff7e6', border: '#ffd591', text: '#d46b08' },
+  { bg: '#e6fffb', border: '#87e8de', text: '#13c2c2' },
+];
+
+const stringToHash = (str: string): number => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash);
+};
+
+const getTagColor = (tag: string): { bg: string; border: string; text: string } => {
+  if (!tag) {
+    return { bg: '#f5f5f5', border: '#d9d9d9', text: '#666666' };
+  }
+  const index = stringToHash(tag) % colorPalette.length;
+  return colorPalette[index];
+};
+
 interface StockData {
   date: string;
   stock_code: string;
@@ -103,6 +132,8 @@ interface FilterOptions {
   markets?: string[];
   favoriteOnly?: boolean;
   favStockCodes?: Set<string>;
+  tag?: string;
+  favList?: any[];
 }
 
 const applyFilters = (list: StockData[], opts: FilterOptions): StockData[] => {
@@ -112,6 +143,11 @@ const applyFilters = (list: StockData[], opts: FilterOptions): StockData[] => {
     if (!matchKeyword(stock, opts.keyword || '')) return false;
     if (!matchMarket(stock.stock_code, opts.markets || [])) return false;
     if (opts.favoriteOnly && opts.favStockCodes && !opts.favStockCodes.has(stock.stock_code)) return false;
+    if (opts.tag !== undefined && opts.tag !== '') {
+      const stockFav = opts.favList?.find((f) => f.stock_code === stock.stock_code);
+      const stockTag = stockFav?.tag || '';
+      if (stockTag !== opts.tag) return false;
+    }
     return true;
   });
 };
@@ -139,6 +175,185 @@ interface AnalysisHistory {
   skillUsed: string;
   timestamp: Date;
 }
+
+interface EditableTagProps {
+  tag: string | null;
+  stockCode: string;
+  onTagChange: (tag: string | null) => void;
+  existingTags: string[];
+}
+
+const EditableTag: React.FC<EditableTagProps> = ({ tag, stockCode, onTagChange, existingTags }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(tag || '');
+  const [filteredTags, setFilteredTags] = useState<string[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectedTagRef = useRef<string | null>(null);
+
+  const color = getTagColor(tag || '');
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  useEffect(() => {
+    if (editValue.trim()) {
+      const filtered = existingTags.filter(t => 
+        t.toLowerCase().includes(editValue.toLowerCase())
+      );
+      setFilteredTags(filtered);
+    } else {
+      setFilteredTags(existingTags);
+    }
+  }, [editValue, existingTags]);
+
+  const handleSave = async () => {
+    selectedTagRef.current = null;
+    const trimmedValue = editValue.trim();
+    const newTag = trimmedValue || null;
+    try {
+      await upsertFavorite(stockCode, { status: 1, tag: newTag });
+      onTagChange(newTag);
+      setIsEditing(false);
+      setFilteredTags([]);
+      if (newTag) {
+        message.success('标签已保存');
+      }
+    } catch (e: any) {
+      message.error('保存标签失败');
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSave();
+    } else if (e.key === 'Escape') {
+      selectedTagRef.current = null;
+      setIsEditing(false);
+      setEditValue(tag || '');
+      setFilteredTags([]);
+    }
+  };
+
+  const handleBlur = () => {
+    setTimeout(() => {
+      if (selectedTagRef.current) {
+        selectedTagRef.current = null;
+        return;
+      }
+      if (isEditing) {
+        handleSave();
+        setFilteredTags([]);
+      }
+    }, 200);
+  };
+
+  const handleEdit = () => {
+    selectedTagRef.current = null;
+    setEditValue(tag || '');
+    setIsEditing(true);
+    setFilteredTags(existingTags);
+  };
+
+  const handleSelectTag = async (selectedTag: string) => {
+    selectedTagRef.current = selectedTag;
+    setEditValue(selectedTag);
+    setFilteredTags([]);
+    try {
+      await upsertFavorite(stockCode, { status: 1, tag: selectedTag });
+      onTagChange(selectedTag);
+      setIsEditing(false);
+      message.success('标签已保存');
+    } catch (e: any) {
+      message.error('保存标签失败');
+    }
+  };
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      {isEditing ? (
+        <>
+          <Input
+            ref={inputRef}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
+            style={{ width: '150px', fontSize: '12px' }}
+            maxLength={20}
+            placeholder="输入标签或选择已有"
+          />
+          {filteredTags.length > 0 && (
+            <div 
+              style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                marginTop: '2px',
+                backgroundColor: '#fff',
+                border: '1px solid #d9d9d9',
+                borderRadius: '4px',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                zIndex: 1000,
+                maxHeight: '150px',
+                overflowY: 'auto',
+              }}
+            >
+              {filteredTags.map((t) => (
+                <div
+                  key={t}
+                  onClick={() => handleSelectTag(t)}
+                  style={{
+                    padding: '4px 12px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    '&:hover': { backgroundColor: '#f5f5f5' },
+                  }}
+                >
+                  <span
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: getTagColor(t).border,
+                    }}
+                  />
+                  {t}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <span
+          onClick={handleEdit}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '2px 10px',
+            borderRadius: '4px',
+            border: `1px solid ${color.border}`,
+            backgroundColor: color.bg,
+            color: color.text,
+            fontSize: '12px',
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+          title="点击编辑标签"
+        >
+          {tag}
+        </span>
+      )}
+    </div>
+  );
+};
 
 const StockList: React.FC = () => {
   // latestTradingDate / selectedDate 默认从后端拉取数据库中最新交易日，
@@ -182,19 +397,30 @@ const StockList: React.FC = () => {
   // 收藏相关状态
   const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
   const [onlyFavorites, setOnlyFavorites] = useState<boolean>(false);
-  const [selectedStockFavoriteInfo, setSelectedStockFavoriteInfo] = useState<{ price_date: string | null; status: number } | null>(null);
+  const [selectedStockFavoriteInfo, setSelectedStockFavoriteInfo] = useState<{ price_date: string | null; status: number; tag: string | null } | null>(null);
+  const [existingTags, setExistingTags] = useState<string[]>([]);
+  const [favList, setFavList] = useState<any[]>([]);
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string>('temp');
 
   // 从后端加载收藏列表（组件首次挂载时）
   const loadFavorites = async () => {
     try {
       const list = await getFavoriteList();
       const favSet = new Set<string>();
+      const tagSet = new Set<string>();
+      const activeList: any[] = [];
       for (const item of list) {
         if (item && item.status === 1) {
           favSet.add(item.stock_code);
+          if (item.tag) {
+            tagSet.add(item.tag);
+          }
+          activeList.push(item);
         }
       }
       setFavStockCodes(favSet);
+      setExistingTags(Array.from(tagSet));
+      setFavList(activeList);
     } catch (e: any) {
       console.error('加载收藏列表失败:', e);
       message.error('加载收藏列表失败');
@@ -205,13 +431,13 @@ const StockList: React.FC = () => {
   const toggleFavorite = async (stockCode: string) => {
     const currentlyFav = favStockCodes.has(stockCode);
     const nextStatus = currentlyFav ? 0 : 1;
-    const payload: { price_date?: string; status: number } = { status: nextStatus };
+    const payload: { price_date?: string; status: number; tag?: string } = { status: nextStatus };
     if (nextStatus === 1) {
-      // 收藏时把当前查询日期作为 price_date 写入
       payload.price_date = selectedDate || new Date().toISOString().split('T')[0];
+      payload.tag = 'temp';
     }
     try {
-      await upsertFavorite(stockCode, payload);
+      const response = await upsertFavorite(stockCode, payload);
       const next = new Set(favStockCodes);
       if (nextStatus === 1) {
         next.add(stockCode);
@@ -219,8 +445,20 @@ const StockList: React.FC = () => {
         next.delete(stockCode);
       }
       setFavStockCodes(next);
-      // 若处于"只看收藏"模式，且取消了收藏，需要实时更新 filteredStocks
-      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter) {
+      const updatedFavList = nextStatus === 1
+        ? favList.map(item =>
+            item.stock_code === stockCode
+              ? { ...item, status: 1, tag: response.tag || 'temp', price_date: response.price_date }
+              : item
+          ).concat(!favList.find(item => item.stock_code === stockCode)
+            ? [{ stock_code: stockCode, status: 1, tag: response.tag || 'temp', price_date: response.price_date }]
+            : [])
+        : favList.filter(item => item.stock_code !== stockCode);
+      setFavList(updatedFavList);
+      if (nextStatus === 1 && !existingTags.includes('temp')) {
+        setExistingTags(prev => [...prev, 'temp']);
+      }
+      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter || selectedTagFilter) {
         setFilteredStocks(applyFilters(stocks, {
           industry: selectedIndustry,
           sentiment: selectedSentiment,
@@ -228,13 +466,15 @@ const StockList: React.FC = () => {
           markets: selectedMarkets,
           favoriteOnly: onlyFavorites,
           favStockCodes: next,
+          tag: onlyFavorites ? selectedTagFilter : undefined,
+          favList: onlyFavorites ? updatedFavList : undefined,
         }));
       }
-      // 如果操作的是当前选中的股票，更新收藏信息
       if (stockCode === selectedStock) {
         setSelectedStockFavoriteInfo({
-          price_date: nextStatus === 1 ? payload.price_date || null : null,
+          price_date: nextStatus === 1 ? response.price_date || null : null,
           status: nextStatus,
+          tag: nextStatus === 1 ? response.tag || 'temp' : null,
         });
       }
     } catch (e: any) {
@@ -282,6 +522,8 @@ const StockList: React.FC = () => {
         markets: selectedMarkets,
         favoriteOnly: onlyFavorites,
         favStockCodes: favStockCodes,
+        tag: onlyFavorites ? selectedTagFilter : undefined,
+        favList: onlyFavorites ? favList : undefined,
       }));
     } catch (error) {
       message.error('获取股票列表失败');
@@ -869,6 +1111,8 @@ const StockList: React.FC = () => {
       markets: selectedMarkets,
       favoriteOnly: onlyFavorites,
       favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
     }));
   };
 
@@ -883,6 +1127,8 @@ const StockList: React.FC = () => {
       markets: selectedMarkets,
       favoriteOnly: onlyFavorites,
       favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
     }));
   };
 
@@ -896,6 +1142,8 @@ const StockList: React.FC = () => {
       markets: selectedMarkets,
       favoriteOnly: onlyFavorites,
       favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
     }));
   };
 
@@ -909,6 +1157,8 @@ const StockList: React.FC = () => {
       markets: value,
       favoriteOnly: onlyFavorites,
       favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
     }));
   };
 
@@ -922,6 +1172,8 @@ const StockList: React.FC = () => {
     setFilteredStocks(applyFilters(stocks, {
       favoriteOnly: onlyFavorites,
       favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
     }));
   };
 
@@ -935,7 +1187,26 @@ const StockList: React.FC = () => {
       markets: selectedMarkets,
       favoriteOnly: checked,
       favStockCodes: favStockCodes,
+      tag: checked ? selectedTagFilter : undefined,
+      favList: checked ? favList : undefined,
     }));
+  };
+
+  // Tag筛选变化处理
+  const handleTagFilterChange = (value: string) => {
+    setSelectedTagFilter(value);
+    if (onlyFavorites) {
+      setFilteredStocks(applyFilters(stocks, {
+        industry: selectedIndustry,
+        sentiment: selectedSentiment,
+        keyword: stockNameFilter,
+        markets: selectedMarkets,
+        favoriteOnly: onlyFavorites,
+        favStockCodes: favStockCodes,
+        tag: value,
+        favList: favList,
+      }));
+    }
   };
 
   // 清除AI分析结果
@@ -987,6 +1258,7 @@ const StockList: React.FC = () => {
       setSelectedStockFavoriteInfo({
         price_date: favInfo.price_date,
         status: favInfo.status,
+        tag: favInfo.tag,
       });
     } catch (e: any) {
       console.error('获取收藏状态失败:', e);
@@ -1425,6 +1697,34 @@ const StockList: React.FC = () => {
           />
         </div>
 
+        {onlyFavorites && (
+          <div style={{ marginRight: '12px', display: 'flex', alignItems: 'center' }}>
+            <span style={{ marginRight: '8px', fontSize: '12px', color: '#666' }}>Tag:</span>
+            <Select
+              value={selectedTagFilter}
+              onChange={(value) => handleTagFilterChange(value)}
+              style={{ width: '120px' }}
+              size="small"
+              options={existingTags.map((tag) => ({
+                value: tag,
+                label: (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span
+                      style={{
+                        width: '6px',
+                        height: '6px',
+                        borderRadius: '50%',
+                        backgroundColor: getTagColor(tag).border,
+                      }}
+                    />
+                    {tag}
+                  </span>
+                ),
+              }))}
+            />
+          </div>
+        )}
+
         <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
           <Button
             type="default"
@@ -1449,6 +1749,7 @@ const StockList: React.FC = () => {
                   loading={loading}
                   pagination={{ pageSize: 20 }}
                   size="small"
+                  //scroll={{ x: 'max-content', y: 'calc(100vh - 320px)' }}
                   rowClassName={(record: any) =>
                     record && record.stock_code === selectedStock ? 'ant-table-row-hover-selected' : ''
                   }
@@ -1540,10 +1841,39 @@ const StockList: React.FC = () => {
                 </div>
               )}  
               {selectedStock && selectedStockFavoriteInfo && selectedStockFavoriteInfo.status === 1 && selectedStockFavoriteInfo.price_date && (
-              <div style={{  paddingTop: '10px', paddingLeft: '80px'}}>
+              <div style={{ paddingTop: '10px', paddingLeft: '80px', display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <Text style={{ fontSize: '14px', color: '#1890ff', fontWeight: 'bold' }}>
                   Focus on {selectedStockFavoriteInfo.price_date}
                 </Text>
+                <EditableTag 
+                  tag={selectedStockFavoriteInfo.tag} 
+                  stockCode={selectedStock}
+                  existingTags={existingTags}
+                  onTagChange={(newTag) => {
+                    setSelectedStockFavoriteInfo(prev => prev ? { ...prev, tag: newTag } : null);
+                    setFavList(prev => {
+                      const updated = prev.map(item => 
+                        item.stock_code === selectedStock ? { ...item, tag: newTag } : item
+                      );
+                      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter || selectedTagFilter) {
+                        setFilteredStocks(applyFilters(stocks, {
+                          industry: selectedIndustry,
+                          sentiment: selectedSentiment,
+                          keyword: stockNameFilter,
+                          markets: selectedMarkets,
+                          favoriteOnly: onlyFavorites,
+                          favStockCodes: favStockCodes,
+                          tag: onlyFavorites ? selectedTagFilter : undefined,
+                          favList: onlyFavorites ? updated : undefined,
+                        }));
+                      }
+                      return updated;
+                    });
+                    if (newTag && !existingTags.includes(newTag)) {
+                      setExistingTags(prev => [...prev, newTag]);
+                    }
+                  }}
+                />
               </div>
             )}
             </div>

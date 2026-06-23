@@ -37,6 +37,7 @@ interface StockData {
   stock_code: string;
   stock_name: string;
   market_cap_r: number | null;
+  period_pct: number | null;
   change_pct: number | null;
   industry_change_pct: number | null;
   close: number | null;
@@ -223,17 +224,17 @@ const Heatmap: React.FC = () => {
    * @returns ColorScaleBin[]（固定 10 段）
    */
   const computeQuantileColorScale = (stockData: StockData[]): ColorScaleBin[] => {
-    const NUM_BINS = 10;
+    const NUM_BINS = 12;
 
-    // 1) 提取有效涨跌幅
+    // 1) 提取有效区间涨跌幅（period_pct）
     const values: number[] = [];
     for (const s of stockData) {
       if (
-        s.change_pct !== null &&
-        s.change_pct !== undefined &&
-        Number.isFinite(s.change_pct)
+        s.period_pct !== null &&
+        s.period_pct !== undefined &&
+        Number.isFinite(s.period_pct)
       ) {
-        values.push(s.change_pct);
+        values.push(s.period_pct);
       }
     }
 
@@ -258,13 +259,13 @@ const Heatmap: React.FC = () => {
     const maxAbs = Math.max(Math.abs(dataMin), Math.abs(dataMax));
     const span = dataMax - dataMin;
 
-    // 2) 以 0 为中心，分 [dataMin, 0] 和 [0, dataMax] 两个半区各 5 段，共 10 段
-    //    - 若 dataMin >= 0（无下跌股票），则整个区间 [0, dataMax] 均分 10 段
-    //    - 若 dataMax <= 0（无上涨股票），则整个区间 [dataMin, 0] 均分 10 段
+    // 2) 以 0 为中心，分 [dataMin, 0] 和 [0, dataMax] 两个半区，共 NUM_BINS 段
+    //    - 若 dataMin >= 0（无下跌股票），则整个区间 [0, dataMax] 均分 NUM_BINS 段
+    //    - 若 dataMax <= 0（无上涨股票），则整个区间 [dataMin, 0] 均分 NUM_BINS 段
     //    - 若 dataMin == dataMax == 0（全持平），则人为扩展 ±0.01
     const boundaries: number[] = [];
-    const NEG_BINS = 5;
-    const POS_BINS = 5;
+    const NEG_BINS = Math.floor(NUM_BINS / 2);
+    const POS_BINS = NUM_BINS - NEG_BINS;
 
     if (span === 0) {
       // 所有股票涨跌幅相同：人为扩展一个小区间以保证刻度可见
@@ -304,9 +305,10 @@ const Heatmap: React.FC = () => {
 
       const stocks: StockData[] = [];
       for (const s of stockData) {
-        const v = s.change_pct;
+        const v = s.period_pct;
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
-        if (isLastBin ? (v >= lower && v <= upper) : (v >= lower && v < upper)) {
+        const EPSILON = 1e-9;
+        if (v >= lower - EPSILON && (isLastBin ? v <= upper + EPSILON : v < upper + EPSILON)) {
           stocks.push(s);
         }
       }
@@ -318,9 +320,9 @@ const Heatmap: React.FC = () => {
       const labelPct = upper * 100;
       const label = `${labelPct.toFixed(0)}%`;
 
-      // 计算该段内股票的平均涨跌幅
+      // 计算该段内股票的平均区间涨跌幅
       const avgChangePct = count > 0
-        ? stocks.reduce((sum, s) => sum + (s.change_pct || 0), 0) / count
+        ? stocks.reduce((sum, s) => sum + (s.period_pct || 0), 0) / count
         : 0;
 
       bins.push({ lower, upper, count, percent, color, label, midpoint, stocks, avgChangePct });
@@ -398,8 +400,8 @@ const Heatmap: React.FC = () => {
     const industryMap = new Map<string, { name: string; children: TreemapData[]; totalValue: number; industryChangePct: number | null }>();
 
     stockData.forEach(stock => {
-      // 过滤无效数据：市值为空/0 或 涨跌幅为空的股票直接跳过
-      if (stock.market_cap_r === null || stock.market_cap_r <= 0 || stock.change_pct === null) {
+      // 过滤无效数据：市值为空/0 或 区间涨跌幅为空的股票直接跳过
+      if (stock.market_cap_r === null || stock.market_cap_r <= 0 || stock.period_pct === null) {
         return;
       }
 
@@ -414,17 +416,17 @@ const Heatmap: React.FC = () => {
       }
 
       const industry = industryMap.get(stock.industry_code)!;
-      // 将涨跌比例(0.0123 表示 +1.23%)转为带 + / - 的百分比文本，拼到 name
-      const changeStr = (stock.change_pct * 100).toFixed(1);
-      const name = `${stock.stock_name}\n${stock.change_pct >= 0 ? '+' : ''}${changeStr}%`;
+      // 将区间涨跌比例(0.0123 表示 +1.23%)转为带 + / - 的百分比文本，拼到 name
+      const changeStr = (stock.period_pct * 100).toFixed(1);
+      const name = `${stock.stock_name}\n${stock.period_pct >= 0 ? '+' : ''}${changeStr}%`;
       // 基于市值预先计算一个字号和显示文本（供 levels 的 label 回调中使用，或作为 fallback）
       const labelConfig = getLabelConfig(stock.market_cap_r, name);
       industry.children.push({
         name,
         value: stock.market_cap_r,      // 决定该股票在 treemap 上的面积大小
-        changePct: stock.change_pct,     // 供 tooltip 显示和颜色计算
+        changePct: stock.period_pct,    // 供 tooltip 显示和颜色计算（区间涨跌幅）
         itemStyle: {
-          color: getColor(stock.change_pct) // 涨跌颜色
+          color: getColor(stock.period_pct) // 区间涨跌颜色
         },
         label: {
           fontSize: labelConfig.fontSize // 基于市值的字号（levels 回调会用 rect 重新动态计算）
@@ -812,10 +814,6 @@ const Heatmap: React.FC = () => {
               maxWidth: 1000
             }}
           >
-            <span style={{ fontSize: 12, color: '#000', whiteSpace: 'nowrap' }}>
-              <InfoCircleOutlined style={{ marginRight: 4, color: '#1890ff' }} />
-              配色刻度
-            </span>
             {/*
              * 条段主体：10 段并排（flex 布局，每段宽度 = percent × 总长）
              * - 最小段宽：每段至少 2%，避免零股票段完全消失
@@ -836,7 +834,7 @@ const Heatmap: React.FC = () => {
             >
               {(() => {
                 // 最小段宽占比（%）
-                const MIN_WIDTH_PCT = 8;
+                const MIN_WIDTH_PCT = 5;
                 // 先计算带最小宽度保护的原始宽度
                 const rawWidths = colorScaleBins.map((bin) =>
                   Math.max(bin.percent * 100, MIN_WIDTH_PCT)
@@ -882,7 +880,6 @@ const Heatmap: React.FC = () => {
                         borderLeft: idx === 0 ? 'none' : '1px solid rgba(255,255,255,0.6)',
                         cursor: 'pointer'
                       }}
-                      title={bin.label}
                       onClick={() => {
                         setSelectedBin(bin);
                         setDrawerVisible(true);
@@ -1010,14 +1007,18 @@ const Heatmap: React.FC = () => {
                     dataIndex: 'stock_code',
                     key: 'stock_code',
                     width: 80,
-                    align: 'center'
+                    align: 'center',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.stock_code || '').localeCompare(b.stock_code || '')
                   },
                   {
                     title: 'Name',
                     dataIndex: 'stock_name',
                     key: 'stock_name',
                     width: 80,
-                    align: 'center'
+                    align: 'center',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.stock_name || '').localeCompare(b.stock_name || '')
                   },
                   {
                     title: 'Industry',
@@ -1026,7 +1027,9 @@ const Heatmap: React.FC = () => {
                     width: 80,
                     align: 'center',
                     ellipsis: true,
-                    render: (text: string) => text || '未知'
+                    render: (text: string) => text || '未知',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.industry_name || '').localeCompare(b.industry_name || '')
                   },
                   {
                     title: 'Close',
@@ -1035,7 +1038,9 @@ const Heatmap: React.FC = () => {
                     width: 80,
                     align: 'right',
                     render: (text: number) =>
-                      typeof text === 'number' ? text.toFixed(2) : '0.00'
+                      typeof text === 'number' ? text.toFixed(2) : '0.00',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.close ?? -Infinity) - (b.close ?? -Infinity)
                   },
                   {
                     title: 'Chg%',
@@ -1048,10 +1053,12 @@ const Heatmap: React.FC = () => {
                       return (
                         <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
                           {value >= 0 ? '+' : ''}
-                          {(value * 100).toFixed(2)}
+                          {value.toFixed(2)}
                         </Text>
                       );
-                    }
+                    },
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.change_pct ?? -Infinity) - (b.change_pct ?? -Infinity)
                   },
                   {
                     title: 'Turnover%',
@@ -1060,7 +1067,9 @@ const Heatmap: React.FC = () => {
                     width: 90,
                     align: 'right',
                     render: (text: number) =>
-                      typeof text === 'number' ? text.toFixed(2) : '-'
+                      typeof text === 'number' ? text.toFixed(2) : '-',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.turnover ?? -Infinity) - (b.turnover ?? -Infinity)
                   },
                   {
                     title: 'Volume%',
@@ -1077,6 +1086,11 @@ const Heatmap: React.FC = () => {
                           {value.toFixed(2)}
                         </Text>
                       );
+                    },
+                    sorter: (a: StockData, b: StockData) => {
+                      const av = Number.isFinite(a.volume_pct) ? (a.volume_pct as number) : -Infinity;
+                      const bv = Number.isFinite(b.volume_pct) ? (b.volume_pct as number) : -Infinity;
+                      return av - bv;
                     }
                   },
                   {
@@ -1085,7 +1099,9 @@ const Heatmap: React.FC = () => {
                     key: 'growth_streak_days',
                     width: 60,
                     align: 'center',
-                    render: (text: number) => (text || 0).toString()
+                    render: (text: number) => (text || 0).toString(),
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.growth_streak_days ?? -Infinity) - (b.growth_streak_days ?? -Infinity)
                   },
                   {
                     title: 'Days%',
@@ -1102,6 +1118,11 @@ const Heatmap: React.FC = () => {
                           {value.toFixed(2)}
                         </Text>
                       );
+                    },
+                    sorter: (a: StockData, b: StockData) => {
+                      const av = Number.isFinite(a.growth_streak_pct) ? (a.growth_streak_pct as number) : -Infinity;
+                      const bv = Number.isFinite(b.growth_streak_pct) ? (b.growth_streak_pct as number) : -Infinity;
+                      return av - bv;
                     }
                   },
                   {
@@ -1110,7 +1131,7 @@ const Heatmap: React.FC = () => {
                     width: 80,
                     align: 'right',
                     render: (_: any, record: StockData) => {
-                      const value = typeof record.change_pct === 'number' ? record.change_pct : 0;
+                      const value = typeof record.period_pct === 'number' ? record.period_pct : 0;
                       if (!Number.isFinite(value)) return '-';
                       return (
                         <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
@@ -1118,6 +1139,11 @@ const Heatmap: React.FC = () => {
                           {(value * 100).toFixed(1)}
                         </Text>
                       );
+                    },
+                    sorter: (a: StockData, b: StockData) => {
+                      const av = Number.isFinite(a.period_pct) ? (a.period_pct as number) : -Infinity;
+                      const bv = Number.isFinite(b.period_pct) ? (b.period_pct as number) : -Infinity;
+                      return av - bv;
                     }
                   }
                 ]}

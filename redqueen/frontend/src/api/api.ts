@@ -152,7 +152,7 @@ export const getFavoriteOne = async (stockCode: string): Promise<FavoriteItem> =
 /** 更新收藏状态：status=1 收藏，status=0 取消收藏 */
 export const upsertFavorite = async (
   stockCode: string,
-  payload: { price_date?: string; status: number }
+  payload: { price_date?: string; status: number; tag?: string | null }
 ): Promise<FavoriteItem & { action?: string }> => {
   const response = await api.post(`/stock/favorite/${stockCode}`, payload);
   return response.data;
