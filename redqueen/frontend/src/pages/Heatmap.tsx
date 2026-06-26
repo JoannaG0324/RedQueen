@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Card, Button, message, Tooltip, Drawer, Table, Typography, Spin } from 'antd';
-import { CalendarOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { CalendarOutlined, InfoCircleOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getHeatmapData, getLatestTradingDay, getStockKLineData } from '../api/api';
+import { getHeatmapData, getLatestTradingDay, getStockKLineData, getFavoriteList, upsertFavorite } from '../api/api';
 import type { ColumnType } from 'antd/es/table';
 
 const { Text } = Typography;
@@ -92,6 +92,9 @@ const Heatmap: React.FC = () => {
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
   const [selectedBin, setSelectedBin] = useState<ColorScaleBin | null>(null);
 
+  // 收藏相关状态
+  const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
+
   // 抽屉内 K 线图相关状态
   const [selectedDrawerStock, setSelectedDrawerStock] = useState<string>('');
   const [drawerKLineData, setDrawerKLineData] = useState<KLineData[]>([]);
@@ -101,7 +104,44 @@ const Heatmap: React.FC = () => {
 
   useEffect(() => {
     loadLatestTradingDay();
+    loadFavorites();
   }, []);
+
+  // 加载收藏列表
+  const loadFavorites = async () => {
+    try {
+      const list = await getFavoriteList();
+      const codes = new Set(list.filter((item: any) => item.status === 1).map((item: any) => item.stock_code));
+      setFavStockCodes(codes);
+    } catch (e: any) {
+      console.error('加载收藏列表失败:', e);
+    }
+  };
+
+  // 点击星标：收藏或取消收藏
+  const toggleFavorite = async (stockCode: string) => {
+    const currentlyFav = favStockCodes.has(stockCode);
+    const nextStatus = currentlyFav ? 0 : 1;
+    const payload: { price_date?: string; status: number; tag?: string } = { status: nextStatus };
+    if (nextStatus === 1) {
+      payload.price_date = date2 || new Date().toISOString().split('T')[0];
+      payload.tag = 'temp';
+    }
+    try {
+      await upsertFavorite(stockCode, payload);
+      const next = new Set(favStockCodes);
+      if (nextStatus === 1) {
+        next.add(stockCode);
+      } else {
+        next.delete(stockCode);
+      }
+      setFavStockCodes(next);
+      message.success(nextStatus === 1 ? '已收藏' : '已取消收藏');
+    } catch (e: any) {
+      console.error('更新收藏失败:', e);
+      message.error('更新收藏失败');
+    }
+  };
 
   useEffect(() => {
     const handleResize = () => {
@@ -1495,6 +1535,28 @@ const Heatmap: React.FC = () => {
                   }
                 })}
                 columns={[
+                  {
+                    title: 'Fav',
+                    key: 'favorite',
+                    width: 50,
+                    align: 'center',
+                    fixed: 'left',
+                    render: (_: any, record: StockData) => {
+                      const isFav = favStockCodes.has(record.stock_code);
+                      return (
+                        <Button
+                          type="text"
+                          size="small"
+                          style={{ padding: 0 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFavorite(record.stock_code);
+                          }}
+                          icon={isFav ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined style={{ color: '#bfbfbf' }} />}
+                        />
+                      );
+                    }
+                  },
                   {
                     title: 'Code',
                     dataIndex: 'stock_code',
