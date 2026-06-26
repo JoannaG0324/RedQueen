@@ -1,11 +1,30 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Card, Button, message, Tooltip, Drawer, Table, Typography } from 'antd';
+import { Card, Button, message, Tooltip, Drawer, Table, Typography, Spin } from 'antd';
 import { CalendarOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getHeatmapData, getLatestTradingDay } from '../api/api';
+import { getHeatmapData, getLatestTradingDay, getStockKLineData } from '../api/api';
 import type { ColumnType } from 'antd/es/table';
 
 const { Text } = Typography;
+
+/**
+ * K 线图数据结构
+ */
+interface KLineData {
+  date: string;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume: number;
+  amount: number;
+  change_rate: number;
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  ma60?: number;
+  ma120?: number;
+}
 
 /**
  * 配色刻度 bin（单个条段）数据结构
@@ -72,6 +91,13 @@ const Heatmap: React.FC = () => {
   // 抽屉相关状态
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
   const [selectedBin, setSelectedBin] = useState<ColorScaleBin | null>(null);
+
+  // 抽屉内 K 线图相关状态
+  const [selectedDrawerStock, setSelectedDrawerStock] = useState<string>('');
+  const [drawerKLineData, setDrawerKLineData] = useState<KLineData[]>([]);
+  const [drawerKLineLoading, setDrawerKLineLoading] = useState<boolean>(false);
+  const drawerKLineChartRef = useRef<HTMLDivElement | null>(null);
+  const drawerKLineChartInstance = useRef<echarts.ECharts | null>(null);
 
   useEffect(() => {
     loadLatestTradingDay();
@@ -744,6 +770,441 @@ const Heatmap: React.FC = () => {
    */
   const colorScaleBins = useMemo(() => computeQuantileColorScale(data), [data]);
 
+  /**
+   * Drawer K 线图渲染函数
+   * 与 StockList 页面的 K 线图逻辑保持一致，简化了部分交互功能
+   */
+  const renderDrawerKLineChart = useCallback((kLineData: KLineData[]) => {
+    if (!drawerKLineChartRef.current || !Array.isArray(kLineData) || kLineData.length === 0) {
+      return;
+    }
+
+    const container = drawerKLineChartRef.current;
+    const rect = container.getBoundingClientRect();
+
+    // 确保 ECharts 实例初始化
+    if (!drawerKLineChartInstance.current) {
+      drawerKLineChartInstance.current = echarts.init(container);
+    }
+
+    // 确保容器有最小高度
+    if (rect.height < 350) {
+      container.style.minHeight = '350px';
+    }
+
+    drawerKLineChartInstance.current.resize();
+
+    // 转换数据格式为 ECharts 需要的格式
+    const convertedData = kLineData.map(item => [
+      item.date,
+      parseFloat(item.open as any) || 0,
+      parseFloat(item.close as any) || 0,
+      parseFloat(item.low as any) || 0,
+      parseFloat(item.high as any) || 0
+    ]);
+
+    // 提取成交量数据
+    const volumeData = kLineData.map(item => [
+      item.date,
+      item.volume ? parseFloat(item.volume as any) : 0
+    ]);
+
+    // 提取 MA 数据
+    const ma5Data = kLineData.map(item => [
+      item.date,
+      item.ma5 !== null ? parseFloat(item.ma5 as any) : null
+    ]);
+    const ma10Data = kLineData.map(item => [
+      item.date,
+      item.ma10 !== null ? parseFloat(item.ma10 as any) : null
+    ]);
+    const ma20Data = kLineData.map(item => [
+      item.date,
+      item.ma20 !== null ? parseFloat(item.ma20 as any) : null
+    ]);
+    const ma60Data = kLineData.map(item => [
+      item.date,
+      item.ma60 !== null ? parseFloat(item.ma60 as any) : null
+    ]);
+
+    // 计算 20 日滚动高点（H60）
+    const computeRollingHigh = (items: KLineData[], period: number) => {
+      const highs: (number | null)[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const start = Math.max(0, i - period + 1);
+        let h = -Infinity;
+        let valid = false;
+        for (let j = start; j <= i; j++) {
+          const hj = parseFloat(items[j].high as any);
+          if (!isNaN(hj) && hj > h) {
+            h = hj;
+            valid = true;
+          }
+        }
+        highs.push(valid ? h : null);
+      }
+      return highs;
+    };
+
+    const h60Data = computeRollingHigh(kLineData, 60);
+
+    // 默认显示最近 90 天的数据（缩放）
+    const totalDays = kLineData.length;
+    const defaultViewDays = 90;
+    const startPercent = totalDays > defaultViewDays ? ((totalDays - defaultViewDays) / totalDays) * 100 : 0;
+    const endPercent = 100;
+
+    const option: echarts.EChartsOption = {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'cross',
+          crossStyle: {
+            color: '#999'
+          }
+        },
+        formatter: function(params: any) {
+          if (!params || !params.length) return '';
+
+          let klineData: any = null;
+          let dataIndex: number = -1;
+
+          for (const item of params) {
+            if (item.seriesName === 'K 线') {
+              klineData = item.data;
+              dataIndex = item.dataIndex;
+              break;
+            }
+          }
+
+          if (!klineData || dataIndex === -1) return '';
+
+          const stockData = kLineData[dataIndex];
+          const volume = stockData.volume ? stockData.volume.toFixed(2) : '0.00';
+          const amount = stockData.amount ? stockData.amount.toFixed(2) : '0.00';
+          const ma5 = stockData.ma5 ? stockData.ma5.toFixed(2) : '-';
+          const ma10 = stockData.ma10 ? stockData.ma10.toFixed(2) : '-';
+          const ma20 = stockData.ma20 ? stockData.ma20.toFixed(2) : '-';
+          const ma60 = stockData.ma60 ? stockData.ma60.toFixed(2) : '-';
+          const h60 = h60Data[dataIndex] !== null ? h60Data[dataIndex]?.toFixed(2) : '-';
+
+          const open = klineData[1] || 0;
+          const close = klineData[2] || 0;
+          const low = klineData[3] || 0;
+          const high = klineData[4] || 0;
+          const changeRateValue = typeof stockData.change_rate === 'number' ? stockData.change_rate : parseFloat(stockData.change_rate) || 0;
+          const changeRateColor = changeRateValue >= 0 ? '#ef232a' : '#11c26d';
+
+          return `日期: ${stockData.date}<br/>
+                 开盘: ${open.toFixed(2)}<br/>
+                 收盘: ${close.toFixed(2)}<br/>
+                 最低: ${low.toFixed(2)}<br/>
+                 最高: ${high.toFixed(2)}<br/>
+                 涨跌幅: <span style="color: ${changeRateColor}">${changeRateValue >= 0 ? '+' : ''}${changeRateValue.toFixed(2)}%</span><br/>
+                 MA5: ${ma5}<br/>
+                 MA10: ${ma10}<br/>
+                 MA20: ${ma20}<br/>
+                 MA60: ${ma60}<br/>
+                 H60: ${h60Data[dataIndex] !== null ? h60Data[dataIndex]?.toFixed(2) : '-'}<br/>
+                 成交量: ${volume}<br/>
+                 成交额: ${amount}`;
+        }
+      },
+      legend: {
+        data: [
+          { name: 'K 线', itemStyle: { color: '#ef232a' } },
+          { name: 'MA5', itemStyle: { color: '#4874CB' } },
+          { name: 'MA10', itemStyle: { color: '#B68D01' } },
+          { name: 'MA20', itemStyle: { color: '#BD5AFF' } },
+          { name: 'MA60', itemStyle: { color: '#689EFF' } },
+          { name: 'H60', itemStyle: { color: '#ef232a' } },
+          { name: '成交量', itemStyle: { color: '#ef232a' } }
+        ],
+        top: 0,
+        left: 0,
+        align: 'left'
+      },
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: [0, 1],
+          start: startPercent,
+          end: endPercent,
+          zoomLock: false
+        },
+        {
+          xAxisIndex: [0, 1],
+          start: startPercent,
+          end: endPercent,
+          height: 20,
+          bottom: 5,
+          zoomLock: false,
+          showDetail: true
+        }
+      ],
+      grid: [
+        {
+          left: 80,
+          right: 40,
+          top: 45,
+          bottom: '30%',
+          containLabel: false
+        },
+        {
+          left: 80,
+          right: 40,
+          top: '70%',
+          bottom: 30,
+          containLabel: false
+        }
+      ],
+      xAxis: [
+        {
+          type: 'category',
+          boundaryGap: true,
+          data: kLineData.map(item => item.date),
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
+            }
+          },
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            show: true
+          },
+          splitLine: {
+            show: false
+          }
+        },
+        {
+          type: 'category',
+          boundaryGap: true,
+          data: kLineData.map(item => item.date),
+          gridIndex: 1,
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
+            }
+          },
+          axisTick: {
+            alignWithLabel: true
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: false
+          }
+        }
+      ],
+      yAxis: [
+        {
+          type: 'value',
+          scale: true,
+          splitNumber: 4,
+          axisLine: {
+            show: true,
+            lineStyle: {
+              color: '#ccc'
+            }
+          },
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            color: '#333',
+            fontSize: 13,
+            formatter: function(value: any) {
+              return value.toFixed(2);
+            }
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
+            }
+          }
+        },
+        {
+          type: 'value',
+          scale: true,
+          gridIndex: 1,
+          splitNumber: 2,
+          axisLine: {
+            show: false
+          },
+          axisTick: {
+            show: false
+          },
+          axisLabel: {
+            show: false
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#eee',
+              type: 'dashed'
+            }
+          }
+        }
+      ],
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }]
+      },
+      series: [
+        {
+          name: 'K 线',
+          type: 'candlestick',
+          data: convertedData.map(item => [item[1], item[2], item[3], item[4]]),
+          itemStyle: {
+            color: '#ef232a',
+            color0: '#11c26d',
+            borderColor: '#ef232a',
+            borderColor0: '#11c26d'
+          }
+        },
+        {
+          name: 'MA5',
+          type: 'line',
+          data: ma5Data.map(item => item[1]),
+          smooth: true,
+          lineStyle: {
+            width: 0.8,
+            color: '#4874CB'
+          },
+          symbol: 'none'
+        },
+        {
+          name: 'MA10',
+          type: 'line',
+          data: ma10Data.map(item => item[1]),
+          smooth: true,
+          lineStyle: {
+            width: 0.8,
+            color: '#B68D01'
+          },
+          symbol: 'none'
+        },
+        {
+          name: 'MA20',
+          type: 'line',
+          data: ma20Data.map(item => item[1]),
+          smooth: true,
+          lineStyle: {
+            width: 0.8,
+            color: '#BD5AFF'
+          },
+          symbol: 'none'
+        },
+        {
+          name: 'MA60',
+          type: 'line',
+          data: ma60Data.map(item => item[1]),
+          smooth: true,
+          lineStyle: {
+            width: 0.8,
+            color: '#689EFF'
+          },
+          symbol: 'none'
+        },
+        {
+          name: 'H60',
+          type: 'line',
+          data: h60Data,
+          smooth: false,
+          showSymbol: false,
+          symbol: 'none',
+          lineStyle: {
+            width: 1,
+            color: '#ef232a',
+            type: 'dashed'
+          }
+        },
+        {
+          name: '成交量',
+          type: 'bar',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: volumeData.map(item => item[1]),
+          itemStyle: {
+            color: function(params: any) {
+              const index = params.dataIndex;
+              const klineItem = convertedData[index];
+              return klineItem[2] >= klineItem[1] ? '#ef232a' : '#11c26d';
+            }
+          }
+        }
+      ]
+    };
+
+    drawerKLineChartInstance.current.setOption(option);
+    drawerKLineChartInstance.current.resize();
+  }, []);
+
+  /**
+   * Drawer K 线图数据获取函数
+   * 以数据最新日期（date2）作为 endDate 查询个股历史 K 线数据
+   */
+  const fetchDrawerKLineData = useCallback(async (stockCode: string) => {
+    if (!stockCode || !date2) {
+      return;
+    }
+
+    setDrawerKLineLoading(true);
+    setDrawerKLineData([]);
+
+    // 清空旧图表
+    if (drawerKLineChartInstance.current) {
+      drawerKLineChartInstance.current.clear();
+    }
+
+    try {
+      // 获取所有可用数据（days=9999），以 date2 作为结束日期
+      const kLineResult = await getStockKLineData(stockCode, 9999, date2);
+
+      if (Array.isArray(kLineResult) && kLineResult.length > 0) {
+        setDrawerKLineData(kLineResult);
+      } else {
+        // 兜底：如果指定 endDate 返回空，尝试不指定 endDate
+        const fallback = await getStockKLineData(stockCode, 9999, '');
+        if (Array.isArray(fallback) && fallback.length > 0) {
+          setDrawerKLineData(fallback);
+        }
+      }
+    } catch (error) {
+      console.error('获取 Drawer K 线数据失败:', error);
+      message.error('获取 K 线数据失败');
+    } finally {
+      setDrawerKLineLoading(false);
+    }
+  }, [date2]);
+
+  // Drawer K 线图数据变化时重新渲染
+  useEffect(() => {
+    if (drawerKLineData.length > 0 && drawerKLineChartRef.current) {
+      renderDrawerKLineChart(drawerKLineData);
+    }
+  }, [drawerKLineData, renderDrawerKLineChart]);
+
+  // Drawer 关闭时清理 K 线图状态
+  useEffect(() => {
+    if (!drawerVisible) {
+      setSelectedDrawerStock('');
+      setDrawerKLineData([]);
+      setDrawerKLineLoading(false);
+      if (drawerKLineChartInstance.current) {
+        drawerKLineChartInstance.current.clear();
+        drawerKLineChartInstance.current.dispose();
+        drawerKLineChartInstance.current = null;
+      }
+    }
+  }, [drawerVisible]);
+
   const fetchHeatmapData = async () => {
     if (!date1 || !date2) {
       return;
@@ -925,43 +1386,18 @@ const Heatmap: React.FC = () => {
       {/* 抽屉：展示刻度区间内的个股信息 */}
       <Drawer
         title={
-          selectedBin ? `涨跌幅区间 ${selectedBin.label}（数据日期 ${date2}）` : '刻度详情'
-        }
-        placement="right"
-        closable={true}
-        onClose={() => {
-          setDrawerVisible(false);
-          setSelectedBin(null);
-        }}
-        open={drawerVisible}
-        width={1000}
-      >
-        {selectedBin && (
-          <>
-            {/* 刻度基本信息：标题和数据同行显示 */}
-            <div
-              style={{
-                background: '#f5f5f5',
-                padding: 16,
-                borderRadius: 8,
-                marginBottom: 16,
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 24,
-                fontSize: 13
-              }}
-            >
+          selectedBin ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, lineHeight: 1.5 }}>
               <span>
-                <strong style={{ color: '#666', marginRight: 4 }}>区间范围</strong>
+                <strong style={{ color: '#666', marginRight: 4 }}>区间</strong>
                 <span style={{ fontWeight: 'bold' }}>
-                  [{(selectedBin.lower * 100).toFixed(2)}%, {(selectedBin.upper * 100).toFixed(2)}%)
-                  {selectedBin.midpoint >= 0 ? '（上涨）' : '（下跌）'}
+                  [{(selectedBin.lower * 100).toFixed(2)}%, {(selectedBin.upper * 100).toFixed(2)})
                 </span>
               </span>
               <span>
-                <strong style={{ color: '#666', marginRight: 4 }}>个股数量 & 占比</strong>
+                <strong style={{ color: '#666', marginRight: 4 }}>数量</strong>
                 <span style={{ fontWeight: 'bold' }}>
-                  {selectedBin.count} 只（{(selectedBin.percent * 100).toFixed(1)}%）
+                  {selectedBin.count}({(selectedBin.percent * 100).toFixed(1)}%)
                 </span>
               </span>
               <span>
@@ -989,6 +1425,52 @@ const Heatmap: React.FC = () => {
                 </Text>
               </span>
             </div>
+          ) : '刻度详情'
+        }
+        placement="right"
+        closable={true}
+        onClose={() => {
+          setDrawerVisible(false);
+          setSelectedBin(null);
+        }}
+        open={drawerVisible}
+        width={1000}
+      >
+        {selectedBin && (
+          <>
+            {/* K 线图模块：点击股票列表中的个股时显示，放在列表上方 */}
+            {selectedDrawerStock && (
+              <div style={{ marginTop: -12, marginBottom: 12 }}>
+                <div style={{
+                  background: '#f5f5f5',
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  marginBottom: 8,
+                  fontSize: 12
+                }}>
+                  <span style={{ fontWeight: 'bold' }}>
+                    {selectedDrawerStock} - {
+                      selectedBin?.stocks.find(s => s.stock_code === selectedDrawerStock)?.stock_name || ''
+                    }
+                  </span>
+                  <span style={{ marginLeft: 16, color: '#666',fontWeight: 'bold' }}>
+                    数据日期 {date2}
+                  </span>
+                </div>
+                <Spin spinning={drawerKLineLoading} tip="加载中...">
+                  <div
+                    ref={drawerKLineChartRef}
+                    style={{
+                      width: '100%',
+                      height: 280,
+                      minHeight: 280,
+                      background: '#fff',
+                      borderRadius: 8
+                    }}
+                  />
+                </Spin>
+              </div>
+            )}
 
             {/* 个股列表：宽度不超过容器 */}
             <div style={{ width: '100%', overflow: 'hidden' }}>
@@ -1001,6 +1483,17 @@ const Heatmap: React.FC = () => {
                   showTotal: (total) => `共 ${total} 只`
                 }}
                 scroll={{ x: 'max-content' }}
+                rowClassName={(record: StockData) =>
+                  record && record.stock_code === selectedDrawerStock ? 'ant-table-row-hover-selected' : ''
+                }
+                onRow={(record: StockData) => ({
+                  onClick: () => {
+                    if (record && record.stock_code) {
+                      setSelectedDrawerStock(record.stock_code);
+                      fetchDrawerKLineData(record.stock_code);
+                    }
+                  }
+                })}
                 columns={[
                   {
                     title: 'Code',
@@ -1148,6 +1641,17 @@ const Heatmap: React.FC = () => {
                   }
                 ]}
                 rowKey="stock_code"
+                rowClassName={(record: StockData) =>
+                  record && record.stock_code === selectedDrawerStock ? 'ant-table-row-hover-selected' : ''
+                }
+                onRow={(record: StockData) => ({
+                  onClick: () => {
+                    if (record && record.stock_code) {
+                      setSelectedDrawerStock(record.stock_code);
+                      fetchDrawerKLineData(record.stock_code);
+                    }
+                  }
+                })}
               />
             </div>
           </>
