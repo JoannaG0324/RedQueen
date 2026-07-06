@@ -186,6 +186,18 @@ def _calc_one_stock(df_stock: pd.DataFrame) -> pd.DataFrame:
         ]
     df.loc[suspend_mask, calc_cols] = np.nan
 
+    # 计算 high_20d_last：以每行为基准，往前统计 high_20d 保持不变的天数
+    # 例：07-03 high_20d=4.6018，07-02、07-01 也是 4.6018，06-30 不是 → high_20d_last=3
+    df["high_20d_last"] = np.nan
+    if "high_20d" in df.columns:
+        valid_mask = ~df["high_20d"].isna()
+        if valid_mask.any():
+            # 用 cumsum 标记"值变化"的分组边界
+            diff = df["high_20d"].ne(df["high_20d"].shift(1))
+            group_id = diff.cumsum()
+            # 每个 group 内从 1 开始计数
+            df.loc[valid_mask, "high_20d_last"] = df[valid_mask].groupby(group_id[valid_mask]).cumcount() + 1
+
     return df
 
 
@@ -203,6 +215,7 @@ def ensure_target_table() -> None:
       high_20d_date  DATE DEFAULT NULL COMMENT '20D均价高点发生交易日',
       low_20d   DOUBLE DEFAULT NULL COMMENT '20D窗口均价最低点对应原始最低价',
       low_20d_date   DATE DEFAULT NULL COMMENT '20D均价低点发生交易日',
+      high_20d_last INT DEFAULT NULL COMMENT '20D均价高点连续保持天数（往前统计相同值的天数）',
 
       high_60d  DOUBLE DEFAULT NULL COMMENT '60D窗口均价最高点对应原始最高价',
       high_60d_date  DATE DEFAULT NULL COMMENT '60D均价高点发生交易日',
@@ -262,7 +275,7 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
 
     cols = [
         "stock_code", "date",
-        "high_20d", "high_20d_date", "low_20d", "low_20d_date",
+        "high_20d", "high_20d_date", "low_20d", "low_20d_date", "high_20d_last",
         "high_60d", "high_60d_date", "low_60d", "low_60d_date",
         "high_90d", "high_90d_date", "low_90d", "low_90d_date",
         "high_120d", "high_120d_date", "low_120d", "low_120d_date",
@@ -272,6 +285,9 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
         row: dict = {
             "stock_code": r["stock_code"],
             "date": _format_date(r["date"]),
+            "high_20d_last": (
+                None if pd.isna(r.get("high_20d_last")) else int(r["high_20d_last"])
+            ),
         }
         for w in WINDOWS:
             for prefix in ("high", "low"):
@@ -632,8 +648,8 @@ def run_incremental(start_date=None,
 if __name__ == "__main__":
     # 默认只跑"最新交易日一天"的增量。
     # 需要全量或自定义起始日时：
-    #   stats = run_full(start_date="2024-06-01")
+    stats = run_full(start_date="2024-06-01")
     #   stats = run_from_date(start_date="2023-06-01")
     #   stats = run_incremental(start_date="2024-06-01")
-    stats = run_incremental()
+    # stats = run_incremental()
     print("完成，统计信息:", stats)

@@ -52,14 +52,16 @@
 
 #root {
   width: 100%;
-  min-height: 100svh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
 }
 
 h1,

@@ -3,7 +3,7 @@ import { Button, Table, message, Space, Typography, Select, Input, Card, Radio, 
 import type { ColumnType } from 'antd/es/table';
 import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite, getFavoriteOne } from '../api/api';
+import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite, getFavoriteOne, getStockSectors } from '../api/api';
 
 const MARKET_OPTIONS = [
   { value: 'SH_60', label: 'SH_60', prefixes: ['60'] },
@@ -117,6 +117,39 @@ const matchSentiment = (days: any, sentiment: string): boolean => {
   }
 };
 
+const MA_GROWTH_OPTIONS = [
+  { value: '0', label: '0 ' },
+  { value: '1', label: '1 ' },
+  { value: '2', label: '2 ' },
+  { value: '3', label: '3 ' },
+  { value: '4', label: '4 ' },
+  { value: '5', label: '5 ' },
+  { value: '5+', label: '5+ ' },
+];
+
+const matchMaGrowthDays = (days: any, filter: string): boolean => {
+  if (!filter) return true;
+  const d = typeof days === 'number' ? days : parseFloat(days) || 0;
+  switch (filter) {
+    case '0':
+      return d >= 0 && d < 1;
+    case '1':
+      return d >= 1 && d < 2;
+    case '2':
+      return d >= 2 && d < 3;
+    case '3':
+      return d >= 3 && d < 4;
+    case '4':
+      return d >= 4 && d < 5;
+    case '5':
+      return d >= 5 && d < 6;
+    case '5+':
+      return d >= 6;
+    default:
+      return true;
+  }
+};
+
 const matchKeyword = (stock: StockData, keyword: string): boolean => {
   if (!keyword) return true;
   const kw = keyword.toLowerCase();
@@ -134,12 +167,18 @@ interface FilterOptions {
   favStockCodes?: Set<string>;
   tag?: string;
   favList?: any[];
+  ma5Growth?: string;
+  ma10Growth?: string;
+  h20LastFilters?: string[];
+  customFilter?: string;
 }
 
 const applyFilters = (list: StockData[], opts: FilterOptions): StockData[] => {
   return list.filter((stock) => {
     if (opts.industry && stock.industry !== opts.industry) return false;
     if (!matchSentiment(stock.growth_streak_days, opts.sentiment || '')) return false;
+    if (!matchMaGrowthDays(stock.ma5_growth_streak_days, opts.ma5Growth || '')) return false;
+    if (!matchMaGrowthDays(stock.ma10_growth_streak_days, opts.ma10Growth || '')) return false;
     if (!matchKeyword(stock, opts.keyword || '')) return false;
     if (!matchMarket(stock.stock_code, opts.markets || [])) return false;
     if (opts.favoriteOnly && opts.favStockCodes && !opts.favStockCodes.has(stock.stock_code)) return false;
@@ -147,6 +186,35 @@ const applyFilters = (list: StockData[], opts: FilterOptions): StockData[] => {
       const stockFav = opts.favList?.find((f) => f.stock_code === stock.stock_code);
       const stockTag = stockFav?.tag || '';
       if (stockTag !== opts.tag) return false;
+    }
+    if (opts.h20LastFilters && opts.h20LastFilters.length > 0) {
+      const h20Last = typeof stock.high_20d_last === 'number' ? stock.high_20d_last : parseFloat(stock.high_20d_last) || 0;
+      const matched = opts.h20LastFilters.some((filter) => {
+        switch (filter) {
+          case '5':
+            return h20Last >= 0 && h20Last <= 5;
+          case '10':
+            return h20Last > 5 && h20Last <= 10;
+          case '15':
+            return h20Last > 10 && h20Last <= 15;
+          case '20':
+            return h20Last > 15 && h20Last <= 20;
+          case '30':
+            return h20Last > 20 && h20Last <= 30;
+          case '30+':
+            return h20Last > 30;
+          default:
+            return true;
+        }
+      });
+      if (!matched) return false;
+    }
+    if (opts.customFilter === 'condition1') {
+      const h20 = typeof stock.high_20d === 'number' ? stock.high_20d : parseFloat(stock.high_20d) || 0;
+      const close = typeof stock.close === 'number' ? stock.close : parseFloat(stock.close) || 0;
+      if (h20 <= 0) return false;
+      const ratio = ((close / h20) - 1) * 100;
+      if (ratio <= -3) return false;
     }
     return true;
   });
@@ -374,6 +442,10 @@ const StockList: React.FC = () => {
   const [timeRange, setTimeRange] = useState<string>('90');
   const [stockNames, setStockNames] = useState<Record<string, string>>({});
   const [selectedSentiment, setSelectedSentiment] = useState<string | undefined>(undefined);
+  const [ma5GrowthFilter, setMa5GrowthFilter] = useState<string | undefined>(undefined);
+  const [ma10GrowthFilter, setMa10GrowthFilter] = useState<string | undefined>(undefined);
+  const [h20LastFilters, setH20LastFilters] = useState<string[]>([]);
+  const [customFilter, setCustomFilter] = useState<string>('');
   const [stockNameFilter, setStockNameFilter] = useState<string>('');
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [aiInput, setAiInput] = useState<string>('');
@@ -400,7 +472,9 @@ const StockList: React.FC = () => {
   const [selectedStockFavoriteInfo, setSelectedStockFavoriteInfo] = useState<{ price_date: string | null; status: number; tag: string | null } | null>(null);
   const [existingTags, setExistingTags] = useState<string[]>([]);
   const [favList, setFavList] = useState<any[]>([]);
-  const [selectedTagFilter, setSelectedTagFilter] = useState<string>('temp');
+  const [sectors, setSectors] = useState<any[]>([]);
+  const [sectorsLoaded, setSectorsLoaded] = useState<boolean>(false);
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string>('');
 
   // 从后端加载收藏列表（组件首次挂载时）
   const loadFavorites = async () => {
@@ -427,6 +501,21 @@ const StockList: React.FC = () => {
     }
   };
 
+  // 加载个股所属板块信息
+  const loadSectors = async () => {
+    if (!selectedStock) return;
+    try {
+      const response = await getStockSectors(selectedStock);
+      console.log('[DEBUG] loadSectors response:', response);
+      setSectors(response.sectors || []);
+      setSectorsLoaded(true);
+    } catch (e: any) {
+      console.error('加载板块信息失败:', e);
+      setSectors([]);
+      setSectorsLoaded(true);
+    }
+  };
+
   // 点击星标：收藏或取消收藏
   const toggleFavorite = async (stockCode: string) => {
     const currentlyFav = favStockCodes.has(stockCode);
@@ -434,7 +523,6 @@ const StockList: React.FC = () => {
     const payload: { price_date?: string; status: number; tag?: string } = { status: nextStatus };
     if (nextStatus === 1) {
       payload.price_date = selectedDate || new Date().toISOString().split('T')[0];
-      payload.tag = 'temp';
     }
     try {
       const response = await upsertFavorite(stockCode, payload);
@@ -448,17 +536,17 @@ const StockList: React.FC = () => {
       const updatedFavList = nextStatus === 1
         ? favList.map(item =>
             item.stock_code === stockCode
-              ? { ...item, status: 1, tag: response.tag || 'temp', price_date: response.price_date }
+              ? { ...item, status: 1, tag: response.tag, price_date: response.price_date }
               : item
           ).concat(!favList.find(item => item.stock_code === stockCode)
-            ? [{ stock_code: stockCode, status: 1, tag: response.tag || 'temp', price_date: response.price_date }]
+            ? [{ stock_code: stockCode, status: 1, tag: response.tag, price_date: response.price_date }]
             : [])
         : favList.filter(item => item.stock_code !== stockCode);
       setFavList(updatedFavList);
-      if (nextStatus === 1 && !existingTags.includes('temp')) {
-        setExistingTags(prev => [...prev, 'temp']);
+      if (nextStatus === 1 && response.tag && !existingTags.includes(response.tag)) {
+        setExistingTags(prev => [...prev, response.tag]);
       }
-      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter || selectedTagFilter) {
+      if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter || selectedTagFilter || ma5GrowthFilter || ma10GrowthFilter || h20LastFilters.length > 0 || customFilter) {
         setFilteredStocks(applyFilters(stocks, {
           industry: selectedIndustry,
           sentiment: selectedSentiment,
@@ -468,13 +556,17 @@ const StockList: React.FC = () => {
           favStockCodes: next,
           tag: onlyFavorites ? selectedTagFilter : undefined,
           favList: onlyFavorites ? updatedFavList : undefined,
+          ma5Growth: ma5GrowthFilter,
+          ma10Growth: ma10GrowthFilter,
+          h20LastFilters: h20LastFilters,
+          customFilter: customFilter,
         }));
       }
       if (stockCode === selectedStock) {
         setSelectedStockFavoriteInfo({
           price_date: nextStatus === 1 ? response.price_date || null : null,
           status: nextStatus,
-          tag: nextStatus === 1 ? response.tag || 'temp' : null,
+          tag: nextStatus === 1 ? response.tag : null,
         });
       }
     } catch (e: any) {
@@ -524,6 +616,8 @@ const StockList: React.FC = () => {
         favStockCodes: favStockCodes,
         tag: onlyFavorites ? selectedTagFilter : undefined,
         favList: onlyFavorites ? favList : undefined,
+        ma5Growth: ma5GrowthFilter,
+        ma10Growth: ma10GrowthFilter,
       }));
     } catch (error) {
       message.error('获取股票列表失败');
@@ -1113,6 +1207,10 @@ const StockList: React.FC = () => {
       favStockCodes: favStockCodes,
       tag: onlyFavorites ? selectedTagFilter : undefined,
       favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: ma10GrowthFilter,
+      h20LastFilters: h20LastFilters,
+      customFilter: customFilter,
     }));
   };
 
@@ -1129,6 +1227,85 @@ const StockList: React.FC = () => {
       favStockCodes: favStockCodes,
       tag: onlyFavorites ? selectedTagFilter : undefined,
       favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: ma10GrowthFilter,
+      h20LastFilters: h20LastFilters,
+      customFilter: customFilter,
+    }));
+  };
+
+  const handleMa5GrowthChange = (value: string | null) => {
+    const filter = value;
+    setMa5GrowthFilter(filter);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
+      ma5Growth: filter,
+      ma10Growth: ma10GrowthFilter,
+      h20LastFilters: h20LastFilters,
+      customFilter: customFilter,
+    }));
+  };
+
+  const handleMa10GrowthChange = (value: string | null) => {
+    const filter = value;
+    setMa10GrowthFilter(filter);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: filter,
+      h20LastFilters: h20LastFilters,
+      customFilter: customFilter,
+    }));
+  };
+
+  const handleH20LastChange = (value: string[]) => {
+    setH20LastFilters(value);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: ma10GrowthFilter,
+      h20LastFilters: value,
+      customFilter: customFilter,
+    }));
+  };
+
+  const handleCustomFilterChange = (value: string | null) => {
+    const filter = value || '';
+    setCustomFilter(filter);
+    setFilteredStocks(applyFilters(stocks, {
+      industry: selectedIndustry,
+      sentiment: selectedSentiment,
+      keyword: stockNameFilter,
+      markets: selectedMarkets,
+      favoriteOnly: onlyFavorites,
+      favStockCodes: favStockCodes,
+      tag: onlyFavorites ? selectedTagFilter : undefined,
+      favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: ma10GrowthFilter,
+      h20LastFilters: h20LastFilters,
+      customFilter: filter,
     }));
   };
 
@@ -1144,6 +1321,8 @@ const StockList: React.FC = () => {
       favStockCodes: favStockCodes,
       tag: onlyFavorites ? selectedTagFilter : undefined,
       favList: onlyFavorites ? favList : undefined,
+      ma5Growth: ma5GrowthFilter,
+      ma10Growth: ma10GrowthFilter,
     }));
   };
 
@@ -1162,10 +1341,14 @@ const StockList: React.FC = () => {
     }));
   };
 
-  // 重置所有 applyFilters 相关的筛选条件（行业 / 情绪 / 名称代码 / 市场）
+  // 重置所有 applyFilters 相关的筛选条件（行业 / 情绪 / 名称代码 / 市场 / 均线 / H20）
   const resetFilters = () => {
     setSelectedIndustry('');
     setSelectedSentiment('');
+    setMa5GrowthFilter(undefined);
+    setMa10GrowthFilter(undefined);
+    setH20LastFilters([]);
+    setCustomFilter('');
     setStockNameFilter('');
     setSelectedMarkets(MARKET_OPTIONS.map((o) => o.value));
     // 仅重置 applyFilters 相关筛选；是否仅看收藏由 Switch 独立控制
@@ -1249,6 +1432,8 @@ const StockList: React.FC = () => {
   const handleStockSelect = async (stockCode: string) => {
     console.log('Selected stock:', stockCode);
     setSelectedStock(stockCode);
+    setSectors([]);
+    setSectorsLoaded(false);
     setKLineLoading(true);
     clearChart();
     const kLineEndDate = showLatestDateKLine ? latestTradingDate : selectedDate;
@@ -1432,6 +1617,7 @@ const StockList: React.FC = () => {
       key: 'industry',
       width: 150,
       align: 'center',
+      fixed: 'left',
       sorter: (a: any, b: any) => {
         const strA = a.industry ?? '';
         const strB = b.industry ?? '';
@@ -1483,7 +1669,7 @@ const StockList: React.FC = () => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
           <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
-            {value >= 0 ? '+' : ''}{value.toFixed(2)}
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
       },
@@ -1503,23 +1689,7 @@ const StockList: React.FC = () => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
           <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
-            {value >= 0 ? '+' : ''}{value.toFixed(2)}
-          </Text>
-        );
-      },
-    },
-    {
-      title: 'Turnover%',
-      dataIndex: 'turnover',
-      key: 'turnover',
-      width: 100,
-      align: 'right',
-      sorter: (a: any, b: any) => (a.turnover || 0) - (b.turnover || 0),
-      render: (text: any) => {
-        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
-        return (
-          <Text>
-            {value.toFixed(2)}
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
       },
@@ -1531,6 +1701,10 @@ const StockList: React.FC = () => {
       width: 80,
       align: 'right',
       sorter: (a: any, b: any) => (a.growth_streak_days || 0) - (b.growth_streak_days || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return Math.floor(value);
+      },
     },
     {
       title: 'Days%',
@@ -1542,30 +1716,40 @@ const StockList: React.FC = () => {
       render: (text: any) => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return (
-          <Text>
-            {value.toFixed(2)}
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d'   }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
       },
     },
     {
-      title: 'Cup(0.1B)',
-      dataIndex: 'market_cap_r',
-      key: 'market_cap_r',
-      width: 120,
+      title: 'per_Days%',
+      key: 'chg_days_pct',
+      width: 100,
       align: 'right',
-      sorter: (a: any, b: any) => (a.market_cap_r || 0) - (b.market_cap_r || 0),
-      render: (text: any) => {
-        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+      sorter: (a: any, b: any) => {
+        const daysA = a.growth_streak_days || 0;
+        const daysB = b.growth_streak_days || 0;
+        const valA = daysA > 0 ? (a.growth_streak_pct || 0) / daysA : 0;
+        const valB = daysB > 0 ? (b.growth_streak_pct || 0) / daysB : 0;
+        return valA - valB;
+      },
+      render: (_: any, record: any) => {
+        const days = record.growth_streak_days || 0;
+        if (days === 0) {
+          return <Text>-</Text>;
+        }
+        const streakPct = typeof record.growth_streak_pct === 'number' ? record.growth_streak_pct : parseFloat(record.growth_streak_pct) || 0;
+        const value = streakPct / days;
         return (
-          <Text>
-            {(value / 100000000).toFixed(2)}
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
       },
     },
     {
-      title: 'Volume%',
+      title: 'VOL%',
       dataIndex: 'volume_pct',
       key: 'volume_pct',
       width: 100,
@@ -1576,7 +1760,155 @@ const StockList: React.FC = () => {
         const color = value >= 0 ? '#ef232a' : '#11c26d';
         return (
           <Text style={{ color: color }}>
-            {value >= 0 ? '+' : ''}{value.toFixed(2)}
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Tover%',
+      dataIndex: 'turnover',
+      key: 'turnover',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.turnover || 0) - (b.turnover || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text>
+            {value.toFixed(1)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Cup|0.1B',
+      dataIndex: 'market_cap_r',
+      key: 'market_cap_r',
+      width: 120,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.market_cap_r || 0) - (b.market_cap_r || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text>
+            {(value / 100000000).toFixed(0)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Dh20',
+      dataIndex: 'high_20d_last',
+      key: 'high_20d_last',
+      width: 80,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.high_20d_last || 0) - (b.high_20d_last || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseInt(text) || 0;
+        return value > 0 ? <Text>{value}</Text> : <Text>0</Text>;
+      },
+    },
+    {
+      title: 'C/H20%',
+      key: 'close_h20_pct',
+      width: 120,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = a.high_20d ? ((a.close || 0) / a.high_20d - 1) * 100 : 0;
+        const valB = b.high_20d ? ((b.close || 0) / b.high_20d - 1) * 100 : 0;
+        return valA - valB;
+      },
+      render: (_: any, record: any) => {
+        const h20 = typeof record.high_20d === 'number' ? record.high_20d : parseFloat(record.high_20d) || 0;
+        const close = typeof record.close === 'number' ? record.close : parseFloat(record.close) || 0;
+        if (h20 <= 0) {
+          return <Text>-</Text>;
+        }
+        const value = ((close / h20) - 1) * 100;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'H20/H60%',
+      key: 'h20_h60_pct',
+      width: 120,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = a.high_60d ? ((a.high_20d || 0) / a.high_60d - 1) * 100 : 0;
+        const valB = b.high_60d ? ((b.high_20d || 0) / b.high_60d - 1) * 100 : 0;
+        return valA - valB;
+      },
+      render: (_: any, record: any) => {
+        const h20 = typeof record.high_20d === 'number' ? record.high_20d : parseFloat(record.high_20d) || 0;
+        const h60 = typeof record.high_60d === 'number' ? record.high_60d : parseFloat(record.high_60d) || 0;
+        if (h20 <= 0 || h60 <= 0) {
+          return <Text>-</Text>;
+        }
+        const value = ((h20 / h60) - 1) * 100;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
+          </Text>
+        );
+      },
+    },
+{
+      title: 'Dma5',
+      dataIndex: 'ma5_growth_streak_days',
+      key: 'ma5_growth_streak_days',
+      width: 80,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.ma5_growth_streak_days || 0) - (b.ma5_growth_streak_days || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return Math.floor(value);
+      },
+    },
+    {
+      title: 'Dma5%',
+      dataIndex: 'ma5_growth_streak_pct',
+      key: 'ma5_growth_streak_pct',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.ma5_growth_streak_pct || 0) - (b.ma5_growth_streak_pct || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
+          </Text>
+        );
+      },
+    },
+    {
+      title: 'Dma10',
+      dataIndex: 'ma10_growth_streak_days',
+      key: 'ma10_growth_streak_days',
+      width: 80,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.ma10_growth_streak_days || 0) - (b.ma10_growth_streak_days || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return Math.floor(value);
+      },
+    },
+    {
+      title: 'Dma10%',
+      dataIndex: 'ma10_growth_streak_pct',
+      key: 'ma10_growth_streak_pct',
+      width: 100,
+      align: 'right',
+      sorter: (a: any, b: any) => (a.ma10_growth_streak_pct || 0) - (b.ma10_growth_streak_pct || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseFloat(text) || 0;
+        return (
+          <Text style={{ color: value >= 0 ? '#ef232a' : '#11c26d' }}>
+            {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
       },
@@ -1599,7 +1931,7 @@ const StockList: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '800px' }}>
-      <div style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           type="date"
           value={selectedDate}
@@ -1642,6 +1974,47 @@ const StockList: React.FC = () => {
           onChange={handleSentimentChange}
           allowClear
           options={SENTIMENT_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+        />
+        <Select
+          placeholder="D_MA5"
+          style={{ width: 120, marginRight: '12px' }}
+          value={ma5GrowthFilter}
+          onChange={handleMa5GrowthChange}
+          allowClear
+          options={MA_GROWTH_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+        />
+        <Select
+          placeholder="D_MA10"
+          style={{ width: 120, marginRight: '12px' }}
+          value={ma10GrowthFilter}
+          onChange={handleMa10GrowthChange}
+          allowClear
+          options={MA_GROWTH_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+        />
+        <Select
+          placeholder="Dh20"
+          style={{ width: 120, marginRight: '12px' }}
+          value={h20LastFilters}
+          onChange={handleH20LastChange}
+          mode="multiple"
+          options={[
+            { value: '5', label: '5' },
+            { value: '10', label: '10' },
+            { value: '15', label: '15' },
+            { value: '20', label: '20' },
+            { value: '30', label: '30' },
+            { value: '30+', label: '30+' },
+          ]}
+        />
+        <Select
+          placeholder="Custom"
+          style={{ width: 150, marginRight: '12px' }}
+          value={customFilter}
+          onChange={handleCustomFilterChange}
+          allowClear
+          options={[
+            { value: 'condition1', label: 'C/H20% > -5%' },
+          ]}
         />
         {aiApplied && (
           <div style={{ position: 'relative', display: 'inline-block', marginRight: '12px' }}>
@@ -1736,7 +2109,7 @@ const StockList: React.FC = () => {
         </div>
       </div>
 
-      <div style={{ width: '100%', flex: 1, display: 'flex', gap: 16, overflowX: 'hidden' }}>
+      <div style={{ width: '100%', flex: 1, display: 'flex', gap: 12, overflowX: 'hidden' }}>
         {/* 左侧股票列表 */}
         <div style={{ flex: 5.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1747,7 +2120,7 @@ const StockList: React.FC = () => {
                   dataSource={filteredStocks}
                   rowKey={(record: any) => `${record.stock_code}-${record.date}`}
                   loading={loading}
-                  pagination={{ pageSize: 20 }}
+                  pagination={{ pageSize: 15 }}
                   size="small"
                   //scroll={{ x: 'max-content', y: 'calc(100vh - 320px)' }}
                   rowClassName={(record: any) =>
@@ -1786,12 +2159,12 @@ const StockList: React.FC = () => {
                     分时
                   </a>
                   <a
-                    href={`https://www.igu888.com/hangqing/${selectedStock}.html`}
+                    href={`https://q.stock.sohu.com/cn/${selectedStock}/index.shtml`}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ textDecoration: 'none', color: '#1890ff' }}
                   >
-                    igu888
+                    SOHU
                   </a>
                 </span>
               ) : 'K LINE'}
@@ -1874,6 +2247,29 @@ const StockList: React.FC = () => {
                     }
                   }}
                 />
+              </div>
+            )}
+            {selectedStock && (
+              <div style={{ paddingTop: '10px', paddingLeft: '80px' }}>
+                <span 
+                  style={{ color: '#1890ff', cursor: 'pointer', fontSize: '14px' }}
+                  onClick={loadSectors}
+                >
+                  所属板块:
+                </span>
+                {sectorsLoaded && sectors.length > 0 && (
+                  <span style={{ marginLeft: '8px', fontSize: '14px' }}>
+                    {sectors.map((s, i) => (
+                      <span key={s.code}>
+                        {i > 0 && ', '}
+                        {s.name}
+                        <span style={{ color: s.change_rate.startsWith('-') ? '#11c26d' : '#ef232a', marginLeft: '4px' }}>
+                          {s.change_rate}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                )}
               </div>
             )}
             </div>

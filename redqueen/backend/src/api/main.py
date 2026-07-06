@@ -13,13 +13,14 @@ from src.utils.database import get_db, Base, engine
 # 导入所有模型类，确保创建数据库表时包含所有表结构
 from src.models.persistence_models import PersistenceManager, TaskStatus
 from src.models.rule_models import RuleManager, TriggeredRule
-from src.models.stock_models import StockDailyQfq, StockDailyAnalysis, IndustryThs, IndustryThsStock, StockDailyQfqCalc, StockFavorite
+from src.models.stock_models import StockDailyQfq, StockDailyAnalysis, IndustryThs, IndustryThsStock, StockDailyQfqCalc, StockFavorite, ConceptPlateData, ConceptStockRel
 
 # 创建所有表（如果不存在）
 Base.metadata.create_all(bind=engine)
 from src.data.data_reader import DataReader
 from src.engine.rule_engine import RuleEngine
 from src.engine.ai_engine import AIEngine
+from src.api.sector_api import fetch_stock_sectors
 
 # 导入Skill系统
 from src.skills import SkillRegistry, OpportunityAnalysisSkill
@@ -372,6 +373,8 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
     # 构建查询条件
     conditions = []
     conditions.append(f"sdqc.date = '{target_date}'")
+    conditions.append("sd.close IS NOT NULL")
+    conditions.append("sd.close > 0")
 
     if industry:
         conditions.append(f"it.industry_name = '{industry}'")
@@ -392,17 +395,22 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             it.industry_name as industry,
             sd.close, sd.change_rate, sdqc.chg_pct_5, sdqc.chg_pct_20, sd.turnover,
             sdqc.growth_streak_days, sdqc.growth_streak_pct,
+            sdqc.ma5_growth_streak_days, sdqc.ma5_growth_streak_pct,
+            sdqc.ma10_growth_streak_days, sdqc.ma10_growth_streak_pct,
             sd.volume,
             CASE
                 WHEN sd.turnover IS NOT NULL AND sd.turnover > 0
                 THEN sd.amount / (sd.turnover / 100) * 1.2
                 ELSE NULL
             END as market_cap_r,
-            sdqc.volume_pct
+            sdqc.volume_pct,
+            sdc.high_20d, sdc.high_20d_date, sdc.high_60d,
+            sdc.high_20d_last as high_20d_last
         FROM stock_daily_qfq_calc sdqc
         LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date
         LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code
         LEFT JOIN industry_ths it ON it.industry_code = its.industry_code
+        LEFT JOIN stock_daily_calc_update sdc ON sdc.stock_code = sdqc.stock_code AND sdc.date = sdqc.date
         WHERE {condition_str}
     """
 
@@ -425,9 +433,17 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             "turnover": row[8],
             "growth_streak_days": row[9],
             "growth_streak_pct": row[10],
-            "volume": row[11],
-            "market_cap_r": row[12],
-            "volume_pct": row[13]
+            "ma5_growth_streak_days": row[11],
+            "ma5_growth_streak_pct": row[12],
+            "ma10_growth_streak_days": row[13],
+            "ma10_growth_streak_pct": row[14],
+            "volume": row[15],
+            "market_cap_r": row[16],
+            "volume_pct": row[17],
+            "high_20d": row[18],
+            "high_20d_date": row[19].isoformat() if row[19] else None,
+            "high_60d": row[20],
+            "high_20d_last": row[21]
         })
 
     return stock_data_list
@@ -809,6 +825,21 @@ async def execute_data_task(task_id: str, page: str = "1", target_date: str = No
             # 执行任务
             print("开始执行update_stock_spot_data任务")
             result = update_stock_spot_data()
+            
+            # 构建任务结果
+            result = {
+                "task_id": task_id,
+                "status": "completed" if result else "failed",
+                "message": result if isinstance(result, str) else f"任务 {task_id} 执行完成",
+                "execution_time": datetime.now().isoformat()
+            }
+        elif task_id == "update_concept_plate":
+            # 导入update_concept_plate模块
+            from src.data.update_concept_plate import update_concept_plate
+            
+            # 执行任务
+            print("开始执行update_concept_plate任务")
+            result = update_concept_plate()
             
             # 构建任务结果
             result = {
@@ -1246,6 +1277,13 @@ async def get_favorite_one(stock_code: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"查询收藏状态失败: {str(e)}")
 
 
+@app.get("/api/stock/sector/{stock_code}", response_model=Dict[str, Any])
+async def get_stock_sector(stock_code: str):
+    """获取个股所属板块信息（数据源：搜狐股票行情 API）"""
+    sectors = fetch_stock_sectors(stock_code)
+    return {"sectors": sectors}
+
+
 @app.post("/api/stock/favorite/{stock_code}", response_model=Dict[str, Any])
 async def upsert_favorite(
     stock_code: str,
@@ -1280,11 +1318,12 @@ async def upsert_favorite(
         if row is None:
             if not price_date:
                 price_date = now.date()
+            default_tag = str(price_date) if status == 1 else None
             new_row = StockFavorite(
                 stock_code=stock_code,
                 price_date=price_date,
                 status=status,
-                tag=tag or None,
+                tag=tag if tag else default_tag,
                 updated_time=now,
             )
             db.add(new_row)
@@ -1304,7 +1343,8 @@ async def upsert_favorite(
             if status == 1 and price_date is not None:
                 row.price_date = price_date
             if tag is not None:
-                row.tag = tag or None
+                default_tag = str(row.price_date) if row.price_date else str(price_date) if price_date else None
+                row.tag = tag if tag else (default_tag if status == 1 else None)
             db.commit()
             db.refresh(row)
             return {
@@ -1336,3 +1376,252 @@ async def delete_favorite(stock_code: str, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"删除收藏失败: {str(e)}")
+
+
+@app.get("/api/sector/list", response_model=List[Dict[str, Any]])
+async def get_sector_list(target_date: str = None, db: Session = Depends(get_db)):
+    """获取概念板块列表数据，展示最近5个数据日期的全量概念板块信息"""
+    try:
+        if target_date:
+            target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+        else:
+            max_date = db.query(func.max(ConceptPlateData.date)).scalar()
+            if max_date:
+                target_date_obj = max_date
+            else:
+                target_date_obj = date.today()
+
+        subquery = db.query(
+            ConceptPlateData.date,
+        ).filter(
+            ConceptPlateData.date <= target_date_obj
+        ).distinct().order_by(ConceptPlateData.date.desc()).limit(5).subquery()
+
+        recent_dates = [row[0] for row in db.query(subquery.c.date).order_by(subquery.c.date.desc()).all()]
+
+        if not recent_dates:
+            return []
+
+        data_map: Dict[str, Dict[str, Any]] = {}
+
+        for d in recent_dates:
+            rows = db.query(ConceptPlateData).filter(ConceptPlateData.date == d).all()
+            for row in rows:
+                concept_name = row.concept_name
+                if concept_name not in data_map:
+                    data_map[concept_name] = {
+                        "concept_name": concept_name,
+                        "concept_id": row.concept_id,
+                        "date": str(target_date_obj),
+                        "stock_count": row.stock_count,
+                        "avg_change_ratio": float(row.avg_change_ratio) if row.avg_change_ratio else 0.0,
+                        "chg_1": None,
+                        "chg_2": None,
+                        "chg_3": None,
+                        "chg_4": None,
+                        "chg_5": None,
+                    }
+
+        for i, d in enumerate(recent_dates):
+            rows = db.query(ConceptPlateData).filter(ConceptPlateData.date == d).all()
+            for row in rows:
+                concept_name = row.concept_name
+                if concept_name in data_map:
+                    if i == 0:
+                        data_map[concept_name]["avg_change_ratio"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+                        data_map[concept_name]["stock_count"] = row.stock_count
+                    elif i == 1:
+                        data_map[concept_name]["chg_1"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+                    elif i == 2:
+                        data_map[concept_name]["chg_2"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+                    elif i == 3:
+                        data_map[concept_name]["chg_3"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+                    elif i == 4:
+                        data_map[concept_name]["chg_4"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+                    elif i == 5:
+                        data_map[concept_name]["chg_5"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
+
+        result = sorted(data_map.values(), key=lambda x: (x["chg_1"] if x["chg_1"] is not None else 0), reverse=True)
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询概念板块数据失败: {str(e)}")
+
+
+@app.get("/api/sector/stocks", response_model=Dict[str, Any])
+async def get_sector_stocks(concept_id: str, concept_name: str, date: str = None, db: Session = Depends(get_db)):
+    """获取概念板块对应的个股数据，仅查询本地数据"""
+    try:
+        local_stocks = db.query(ConceptStockRel).filter(ConceptStockRel.concept_id == concept_id).all()
+        
+        has_local_data = len(local_stocks) > 0
+        latest_fetch_time = None
+        
+        if has_local_data:
+            latest_fetch_time = max([stock.fetch_time for stock in local_stocks])
+        
+        stock_codes = [stock.stock_code for stock in local_stocks]
+        
+        if date:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        else:
+            max_date = db.query(func.max(StockDailyAnalysis.date)).scalar()
+            target_date = max_date if max_date else datetime.date.today()
+        
+        query = db.query(
+            StockDailyAnalysis.stock_code,
+            StockDailyAnalysis.stock_name,
+            StockDailyAnalysis.close,
+            StockDailyAnalysis.change_rate,
+            StockDailyAnalysis.turnover,
+            StockDailyAnalysis.volume,
+            StockDailyAnalysis.amount
+        ).filter(
+            StockDailyAnalysis.stock_code.in_(stock_codes),
+            StockDailyAnalysis.date == target_date
+        )
+        
+        analysis_data = query.all()
+        
+        stock_data_map: Dict[str, Dict[str, Any]] = {}
+        for row in analysis_data:
+            stock_data_map[row.stock_code] = {
+                "stock_code": row.stock_code,
+                "stock_name": row.stock_name,
+                "close": float(row.close) if row.close else 0.0,
+                "change_pct": float(row.change_rate) if row.change_rate else 0.0,
+                "turnover": float(row.turnover) if row.turnover else 0.0,
+                "volume": float(row.volume) if row.volume else 0.0,
+                "amount": float(row.amount) if row.amount else 0.0,
+                "growth_streak_days": None,
+                "growth_streak_pct": None,
+                "volume_pct": None,
+                "high_20d": None,
+                "high_20d_last": None
+            }
+        
+        qfq_calc_sql = f"""
+            SELECT stock_code, growth_streak_days, growth_streak_pct, volume_pct 
+            FROM stock_daily_qfq_calc 
+            WHERE stock_code IN ({','.join([f"'{code}'" for code in stock_codes])}) 
+            AND date = '{target_date}'
+        """
+        try:
+            qfq_data = db.execute(text(qfq_calc_sql)).fetchall()
+            for row in qfq_data:
+                if row[0] in stock_data_map:
+                    stock_data_map[row[0]]["growth_streak_days"] = float(row[1]) if row[1] else None
+                    stock_data_map[row[0]]["growth_streak_pct"] = float(row[2]) if row[2] else None
+                    stock_data_map[row[0]]["volume_pct"] = float(row[3]) if row[3] else None
+        except Exception as e:
+            print(f"查询 stock_daily_qfq_calc 失败: {str(e)}")
+        
+        calc_update_sql = f"""
+            SELECT stock_code, high_20d, high_20d_last 
+            FROM stock_daily_calc_update 
+            WHERE stock_code IN ({','.join([f"'{code}'" for code in stock_codes])}) 
+            AND date = '{target_date}'
+        """
+        try:
+            calc_update_data = db.execute(text(calc_update_sql)).fetchall()
+            for row in calc_update_data:
+                if row[0] in stock_data_map:
+                    stock_data_map[row[0]]["high_20d"] = float(row[1]) if row[1] else None
+                    stock_data_map[row[0]]["high_20d_last"] = int(row[2]) if row[2] else None
+        except Exception as e:
+            print(f"查询 stock_daily_calc_update 失败: {str(e)}")
+        
+        result = []
+        for stock in local_stocks:
+            code = stock.stock_code
+            if code in stock_data_map:
+                result.append(stock_data_map[code])
+            else:
+                result.append({
+                    "stock_code": code,
+                    "stock_name": stock.stock_name,
+                    "close": 0.0,
+                    "change_pct": 0.0,
+                    "turnover": 0.0,
+                    "volume": 0.0,
+                    "amount": 0.0,
+                    "growth_streak_days": None,
+                    "growth_streak_pct": None,
+                    "volume_pct": None,
+                    "high_20d": None,
+                    "high_20d_last": None
+                })
+        
+        return {
+            "data": result,
+            "has_local_data": has_local_data,
+            "latest_fetch_time": latest_fetch_time.isoformat() if latest_fetch_time else None
+        }
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] get_sector_stocks: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"查询概念个股数据失败: {str(e)}")
+
+
+@app.post("/api/sector/stocks/update", response_model=Dict[str, Any])
+async def update_sector_stocks(concept_id: str, concept_name: str, db: Session = Depends(get_db)):
+    """手动更新概念个股关系数据"""
+    try:
+        updated_stocks = await update_concept_stock_rel(concept_id, db)
+        
+        return {
+            "success": True,
+            "updated_count": len(updated_stocks),
+            "message": f" '{concept_name}' 板块更新"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新概念个股数据失败: {str(e)}")
+
+
+async def update_concept_stock_rel(concept_id: str, db: Session):
+    """从搜狐获取概念个股关系数据并更新数据库"""
+    try:
+        import requests
+        import re
+        
+        url = f"https://q.stock.sohu.com/pl/{concept_id}-1.html?uid=1782810418778cebgwp&873295275398"
+        
+        response = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        response.raise_for_status()
+        
+        content = response.text
+        
+        pattern = r"PEAK_ODIA\((.*?)\);?"
+        match = re.search(pattern, content, re.DOTALL)
+        
+        if not match:
+            return []
+        
+        peak_content = match.group(1)
+        
+        stock_pattern = r"\['cn_(\d{6})',\s*'([^']+)'"
+        matches = re.findall(stock_pattern, peak_content)
+        
+        db.query(ConceptStockRel).filter(ConceptStockRel.concept_id == concept_id).delete()
+        
+        stocks = []
+        for stock_code, stock_name in matches:
+            rel = ConceptStockRel(
+                concept_id=concept_id,
+                stock_code=stock_code,
+                stock_name=stock_name,
+                fetch_time=datetime.now()
+            )
+            stocks.append(rel)
+        
+        if stocks:
+            db.add_all(stocks)
+            db.commit()
+        
+        return stocks
+    except Exception as e:
+        db.rollback()
+        raise

@@ -230,6 +230,175 @@ def fetch_kline_from_eastmoney(
 
 
 # ---------------------------------------------------------------------------
+# 搜狐备用数据源 
+# ---------------------------------------------------------------------------
+
+SOHU_BASE_URL = "https://hq.stock.sohu.com/cn/{code_suffix}/cn_{stock_code}-1.html"
+
+_SOHU_REFERERS = [
+    "https://stock.sohu.com/",
+    "https://www.sohu.com/",
+    "https://finance.sohu.com/",
+]
+
+
+def _build_sohu_url(stock_code: str) -> str:
+    """构建搜狐股票K线URL。
+    
+    URL格式: https://hq.stock.sohu.com/cn/{001}/cn_{300001}-1.html
+    第一个括号内是股票代码的后三位，第二个括号是完整股票代码
+    """
+    code_suffix = stock_code[-3:] if len(stock_code) >= 3 else stock_code
+    return SOHU_BASE_URL.format(code_suffix=code_suffix, stock_code=stock_code)
+
+
+def _parse_sohu_response(raw: str) -> Dict[str, Any]:
+    """解析搜狐返回的 JavaScript 函数调用格式，提取内部 JSON。
+    
+    返回格式示例:
+    fortune_hq({'index':[...], 'price_A1':[...], 'quote_k_r':[...]});
+    """
+    raw = raw.strip()
+    # 移除 fortune_hq( 和 ); 部分
+    if raw.startswith("fortune_hq("):
+        raw = raw[11:]
+    if raw.endswith(");"):
+        raw = raw[:-2]
+    elif raw.endswith(")"):
+        raw = raw[:-1]
+    
+    return json.loads(raw)
+
+
+def _sohu_rows_from_payload(payload: Dict[str, Any], stock_code: str) -> List[Dict[str, Any]]:
+    """把搜狐返回的 payload 解析为统一行结构。"""
+    
+    stock_name = ""
+    amplitude = 0.0
+    
+    # 从 price_A1 获取股票名称和振幅
+    price_a1 = payload.get("price_A1", [])
+    if isinstance(price_a1, list) and len(price_a1) >= 5:
+        stock_name = price_a1[1] if price_a1[1] else ""
+        amp_str = price_a1[4].replace("%", "").strip() if price_a1[4] else "0"
+        try:
+            amplitude = float(amp_str)
+        except ValueError:
+            amplitude = 0.0
+    
+    # 从 quote_k_r 获取 K 线数据
+    quote_k_r = payload.get("quote_k_r", [])
+    if not isinstance(quote_k_r, list) or len(quote_k_r) < 2:
+        return []
+    
+    # quote_k_r[1] 开始是 K 线数据字符串列表，格式如: "['20260701','20.32','21.45',...]"
+    rows: List[Dict[str, Any]] = []
+    for kline_str in quote_k_r[1:]:
+        if not kline_str:
+            continue
+        # 解析单条 K 线数据
+        try:
+            # 移除前后方括号和引号，然后按逗号分割
+            kline_data = kline_str.strip("[]").replace("'", "").split(",")
+            if len(kline_data) < 12:
+                continue
+            
+            date_str = kline_data[0].strip()      # 20260701
+            open_v = float(kline_data[1].strip())
+            close_v = float(kline_data[2].strip())
+            high_v = float(kline_data[3].strip())
+            low_v = float(kline_data[4].strip())
+            volume_v = float(kline_data[5].strip())
+            amount_raw = float(kline_data[6].strip())  # 需乘以10000
+            turnover_str = kline_data[7].strip().replace("%", "")
+            change_amount_str = kline_data[8].strip()  # 涨跌额
+            change_rate_str = kline_data[9].strip().replace("%", "")  # 涨跌幅
+            
+            # 转换日期格式
+            date_v = datetime.strptime(date_str, "%Y%m%d").date()
+            
+            # 成交额乘以 10000
+            amount_v = amount_raw * 10000
+            
+            # 解析百分比字段
+            change_rate = float(change_rate_str) if change_rate_str else 0.0
+            change_amount = float(change_amount_str) if change_amount_str else 0.0
+            turnover = float(turnover_str) if turnover_str else 0.0
+            
+        except (TypeError, ValueError, IndexError):
+            continue
+        
+        rows.append({
+            "stock_code": stock_code,
+            "date": date_v,
+            "open": open_v,
+            "close": close_v,
+            "high": high_v,
+            "low": low_v,
+            "volume": volume_v,
+            "amount": amount_v,
+            "amplitude": amplitude,
+            "change_rate": change_rate,
+            "change_amount": change_amount,
+            "turnover": turnover,
+            "stock_name": stock_name,
+        })
+    
+    # 按日期排序
+    rows.sort(key=lambda x: x["date"])
+    
+    return rows
+
+
+def fetch_kline_from_sohu(
+    stock_code: str,
+    timeout: int = 15,
+    max_retries: int = 3,
+) -> List[Dict[str, Any]]:
+    """独立功能：从搜狐请求个股日线数据（备用数据源）。
+    
+    输入参数：
+        stock_code: 股票代码，例如 "300854" / "600519"
+        timeout   : HTTP 单次请求超时（秒）
+        max_retries: 失败重试次数
+    
+    返回：与 fetch_kline_from_eastmoney 相同的统一行结构 dict 列表。
+    """
+    url = _build_sohu_url(stock_code)
+    
+    headers = {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Referer": random.choice(_SOHU_REFERERS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+    }
+    
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            payload = _parse_sohu_response(resp.text)
+            rows = _sohu_rows_from_payload(payload, stock_code)
+            
+            if not rows:
+                raise RuntimeError("搜狐接口返回空的 K 线数据")
+            
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= max_retries:
+                break
+            backoff = 1.0 * (2 ** (attempt - 1)) * random.uniform(1.0, 2.0)
+            print(f"  [WARN] 第 {attempt} 次搜狐请求失败: {exc}；"
+                  f"{backoff:.2f}s 后重试")
+            time.sleep(backoff)
+    assert last_exc is not None
+    raise last_exc
+
+
+# ---------------------------------------------------------------------------
 # 雪球备用数据源 
 # ---------------------------------------------------------------------------
 
@@ -619,7 +788,7 @@ def refresh_one_stock(stock_code: str, market: Optional[int], lmt: int,
                       data_source: str = "eastmoney") -> dict:
     """拉取 + 覆盖写入 + 标记完成，单股流程。返回统计 dict；失败抛出异常。
 
-    data_source: "eastmoney" 或 "xueqiu"，按指定数据源拉取，不再自动回落。
+    data_source: "eastmoney"、"xueqiu" 或 "sohu"，按指定数据源拉取，不再自动回落。
     """
     t0 = time.time()
     print(f"  [{datetime.now():%H:%M:%S}] -> {stock_code}", end="", flush=True)
@@ -645,6 +814,12 @@ def refresh_one_stock(stock_code: str, market: Optional[int], lmt: int,
                 stock_code=stock_code, market=market,
                 bar_count=lmt, end_date=end_date,
             )
+        except Exception as exc:
+            error_msg = str(exc)
+            rows = []
+    elif data_source == "sohu":
+        try:
+            rows = fetch_kline_from_sohu(stock_code=stock_code)
         except Exception as exc:
             error_msg = str(exc)
             rows = []
@@ -743,7 +918,7 @@ def run_loop(market, lmt: int,
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="从前复权日线接口拉取数据并写入 stock_daily_analysis（支持 eastmoney/xueqiu）"
+        description="从前复权日线接口拉取数据并写入 stock_daily_analysis（支持 eastmoney/xueqiu/sohu）"
     )
     p.add_argument("--market", type=int, default=None,
                    help="市场号：0=深/北交/创业板，1=沪市。默认自动推断。")
@@ -756,12 +931,14 @@ def parse_args() -> argparse.Namespace:
                    help="每只股票后随机休眠上界（秒），默认 1.0。设 0 则不休眠")
     p.add_argument("--stock-code", default=None,
                    help="可选：只刷新单只股票代码，用于调试；未传则遍历标记表")
-    p.add_argument("--data-source", choices=["eastmoney", "xueqiu"], default="eastmoney",
-                   help="数据源：eastmoney（东方财富）或 xueqiu（雪球），默认 eastmoney")
+    p.add_argument("--data-source", choices=["eastmoney", "xueqiu", "sohu"], default="eastmoney",
+                   help="数据源：eastmoney（东方财富）、xueqiu（雪球）或 sohu（搜狐），默认 eastmoney")
     p.add_argument("--dry-run-eastmoney", action="store_true",
                    help="仅从东财拉取并打印前 N 行，不写库（测试 fetch_kline_from_eastmoney）")
     p.add_argument("--dry-run-xueqiu", action="store_true",
                    help="仅从雪球拉取并打印前 N 行，不写库（测试 fetch_kline_from_xueqiu）")
+    p.add_argument("--dry-run-sohu", action="store_true",
+                   help="仅从搜狐拉取并打印前 N 行，不写库（测试 fetch_kline_from_sohu）")
     p.add_argument("--dry-limit", type=int, default=5,
                    help="dry-run 时打印前多少行，默认 5")
     return p.parse_args()
@@ -792,6 +969,11 @@ if __name__ == "__main__":
             stock_code=args.stock_code,
             market=args.market,
             bar_count=args.lmt,
+        )
+        _pprint_rows(rows, args.dry_limit)
+    elif args.dry_run_sohu and args.stock_code:
+        rows = fetch_kline_from_sohu(
+            stock_code=args.stock_code,
         )
         _pprint_rows(rows, args.dry_limit)
     else:

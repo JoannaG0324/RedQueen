@@ -162,3 +162,85 @@ export const deleteFavorite = async (stockCode: string) => {
   const response = await api.delete(`/stock/favorite/${stockCode}`);
   return response.data;
 };
+
+export interface SectorInfo {
+  code: string;
+  name: string;
+  change_rate: string;
+}
+
+export const getStockSectors = async (stockCode: string): Promise<{ sectors: SectorInfo[] }> => {
+  const response = await api.get(`/stock/sector/${stockCode}`);
+  return response.data;
+};
+
+export interface ConceptPlateData {
+  concept_name: string;
+  concept_id: string;
+  date: string;
+  stock_count: number;
+  avg_change_ratio: number;
+  chg_1: number | null;
+  chg_2: number | null;
+  chg_3: number | null;
+  chg_4: number | null;
+  chg_5: number | null;
+}
+
+export const getSectorList = async (targetDate: string = ''): Promise<ConceptPlateData[]> => {
+  const params: any = {};
+  if (targetDate) {
+    params.target_date = targetDate;
+  }
+  const response = await api.get('/sector/list', { params });
+  return response.data;
+};
+
+export interface SectorStockData {
+  stock_code: string;
+  stock_name: string;
+  close: number;
+  change_pct: number;
+  turnover: number;
+  volume: number;
+  amount: number;
+  growth_streak_days: number | null;
+  growth_streak_pct: number | null;
+  volume_pct: number | null;
+  high_20d: number | null;
+  high_20d_last: number | null;
+}
+
+export interface SectorStockResult {
+  data: SectorStockData[];
+  has_local_data: boolean;
+  latest_fetch_time: string | null;
+}
+
+export const getSectorStocks = async (conceptId: string, conceptName: string, date: string = ''): Promise<SectorStockResult> => {
+  const params: any = {
+    concept_id: conceptId,
+    concept_name: conceptName
+  };
+  if (date) {
+    params.date = date;
+  }
+  const response = await api.get('/sector/stocks', { params });
+  return response.data;
+};
+
+export interface UpdateSectorStocksResult {
+  success: boolean;
+  updated_count: number;
+  message: string;
+}
+
+export const updateSectorStocks = async (conceptId: string, conceptName: string): Promise<UpdateSectorStocksResult> => {
+  const response = await api.post('/sector/stocks/update', null, {
+    params: {
+      concept_id: conceptId,
+      concept_name: conceptName
+    }
+  });
+  return response.data;
+};

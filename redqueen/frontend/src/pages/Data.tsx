@@ -52,13 +52,12 @@ const Data: React.FC = () => {
       result: ''
     },
     {
-      id: 'update_stock_daily_backup',
-      name: '-- --> 个股价量数据(Browser)',
-      description: '个股的每日交易数据，包括开盘价、收盘价、成交量等',
+      id: 'update_concept_plate',
+      name: '概念板块数据(SOHU)',
+      description: '从SOHU获取概念板块数据，包括板块名称、成交量、涨跌幅等',
       isSelected: false,
       status: 'idle',
-      result: '',
-      requiresPage: true
+      result: ''
     },
     {
       id: 'update_industry_ths_index_daily',
@@ -67,6 +66,15 @@ const Data: React.FC = () => {
       isSelected: false,
       status: 'idle',
       result: ''
+    },
+    {
+      id: 'update_stock_daily_backup',
+      name: 'Backup_个股价量数据(Browser)',
+      description: '个股的每日交易数据，包括开盘价、收盘价、成交量等',
+      isSelected: false,
+      status: 'idle',
+      result: '',
+      requiresPage: true
     },
     {
       id: 'duplicate_check',
@@ -176,12 +184,13 @@ const Data: React.FC = () => {
     setDataUpdateSelected(newDataUpdateSelected);
     setTasks(prevTasks =>
       prevTasks.map(task => {
-        // 数据更新任务：任务1-6
+        // 数据更新任务
         const dataUpdateTaskIds = [
           'update_industry_flow_data',
           'update_stock_flow_data',
           'update_stock_ztb_data',
           'update_stock_spot_data',
+          'update_concept_plate',
           'update_stock_daily_backup',
           'update_industry_ths_index_daily'
         ];
@@ -396,7 +405,7 @@ const Data: React.FC = () => {
 
   return (
     <div style={{ padding: '24px' }}>
-      <Card style={{ marginTop: '24px' }}>
+      <Card style={{ marginTop: '24px' }} styles={{ body: { overflowY: 'auto', maxHeight: 'calc(100vh - 240px)' } }}>
         <Space orientation="vertical" style={{ width: '100%' }}>
           {/* 操作按钮 */}
           <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '16px' }}>
@@ -438,6 +447,7 @@ const Data: React.FC = () => {
             'update_stock_flow_data',
             'update_stock_ztb_data',
             'update_stock_spot_data',
+            'update_concept_plate',
             'update_stock_daily_backup',
             'update_industry_ths_index_daily'
           ].includes(task.id)).map(task => (
@@ -666,7 +676,8 @@ const Data: React.FC = () => {
           style={{ marginTop: 16 }}
         >
           <Radio value="eastmoney">东方财富</Radio><br />
-          <Radio value="xueqiu">雪球</Radio>
+          <Radio value="xueqiu">雪球</Radio><br />
+          <Radio value="sohu">搜狐</Radio>
         </Radio.Group>
         <p style={{ fontSize: 12, color: '#999', marginTop: 16 }}>
           提示：选择后将从指定数据源拉取数据，不再自动切换备用源

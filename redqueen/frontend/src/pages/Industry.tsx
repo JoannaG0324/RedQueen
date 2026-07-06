@@ -853,7 +853,7 @@ const Industry: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '800px' }}>
-      <div style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           type="date"
           value={selectedDate}
@@ -878,7 +878,7 @@ const Industry: React.FC = () => {
         </Button>
       </div>
 
-      <div style={{ width: '100%', flex: 1, display: 'flex', gap: 16, overflowX: 'hidden' }}>
+      <div style={{ width: '100%', flex: 1, display: 'flex', gap: 12, overflowX: 'hidden' }}>
         {/* 左侧行业列表 */}
         <div style={{ flex: 6, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column' }}>

@@ -132,3 +132,40 @@ class StockFavorite(Base):
     status = Column(Integer, nullable=False, default=1)
     tag = Column(String(20), nullable=True, default=None)
     updated_time = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class ConceptPlateData(Base):
+    """概念板块数据表"""
+    __tablename__ = "concept_plate_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    concept_id = Column(String(20))
+    concept_name = Column(String(100))
+    stock_count = Column(Integer)
+    avg_price = Column(DECIMAL(10, 2))
+    avg_change_amount = Column(DECIMAL(10, 2))
+    avg_change_ratio = Column(DECIMAL(10, 2))
+    total_volume = Column(Integer)
+    total_amount = Column(Integer)
+    top_stock_code = Column(String(10))
+    top_stock_name = Column(String(50))
+    top_stock_price = Column(DECIMAL(10, 2))
+    top_stock_change_amount = Column(DECIMAL(10, 2))
+    top_stock_change_ratio = Column(DECIMAL(10, 2))
+    date = Column(Date, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class ConceptStockRel(Base):
+    """概念个股映射中间表"""
+    __tablename__ = "concept_stock_rel"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    concept_id = Column(String(20), nullable=False, index=True)
+    stock_code = Column(String(6), nullable=False)
+    stock_name = Column(String(50), nullable=False)
+    fetch_time = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        {'mysql_engine': 'InnoDB', 'mysql_charset': 'utf8mb4'}
+    )

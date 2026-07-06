@@ -125,7 +125,6 @@ const Heatmap: React.FC = () => {
     const payload: { price_date?: string; status: number; tag?: string } = { status: nextStatus };
     if (nextStatus === 1) {
       payload.price_date = date2 || new Date().toISOString().split('T')[0];
-      payload.tag = 'temp';
     }
     try {
       await upsertFavorite(stockCode, payload);
@@ -658,7 +657,7 @@ const Heatmap: React.FC = () => {
           type: 'treemap',
           visibleMin: 80,
           top: 0, 
-          bottom: 0,
+          bottom: 30,
           left: 0,
           right: 0,
           breadcrumb: {
@@ -668,7 +667,7 @@ const Heatmap: React.FC = () => {
             height: 25,
             separator: ' > ',
             textStyle: {
-              fontSize: 16,
+              fontSize: 12,
               color: '#4096ff'
             }
           },
@@ -1267,17 +1266,17 @@ const Heatmap: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 'calc(100vh - 150px)' }}>
-      <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <CalendarOutlined style={{ fontSize: 16 }} />
-          <span>起始日期:</span>
-          <input
-            type="date"
-            value={date1}
-            onChange={(e) => setDate1(e.target.value)}
-            style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '32px' }}
-          />
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 150px)', width: '100%' }}>
+        <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <CalendarOutlined style={{ fontSize: 16 }} />
+            <span>起始日期:</span>
+            <input
+              type="date"
+              value={date1}
+              onChange={(e) => setDate1(e.target.value)}
+              style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '32px' }}
+            />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>结束日期:</span>
@@ -1420,7 +1419,7 @@ const Heatmap: React.FC = () => {
 
       <div
         ref={chartContainerRef}
-        style={{ flex: 1, minHeight: 'calc(100vh - 150px)', width: '100%', position: 'relative' }}
+        style={{ flex: 1, width: '100%', position: 'relative', minHeight: 400 }}
       />
 
       {/* 抽屉：展示刻度区间内的个股信息 */}
@@ -1480,22 +1479,55 @@ const Heatmap: React.FC = () => {
           <>
             {/* K 线图模块：点击股票列表中的个股时显示，放在列表上方 */}
             {selectedDrawerStock && (
-              <div style={{ marginTop: -12, marginBottom: 12 }}>
-                <div style={{
-                  background: '#f5f5f5',
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  marginBottom: 8,
-                  fontSize: 12
-                }}>
-                  <span style={{ fontWeight: 'bold' }}>
-                    {selectedDrawerStock} - {
-                      selectedBin?.stocks.find(s => s.stock_code === selectedDrawerStock)?.stock_name || ''
-                    }
-                  </span>
-                  <span style={{ marginLeft: 16, color: '#666',fontWeight: 'bold' }}>
-                    数据日期 {date2}
-                  </span>
+              <div style={{ marginTop: -12, marginBottom: 12, borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
+                <div>
+                  <div style={{
+                    background: '#f5f5f5',
+                    padding: '6px 12px',
+                    borderRadius: 8,
+                    marginBottom: 2,
+                    fontSize: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <div>
+                      <span style={{ fontWeight: 'bold' }}>
+                        {selectedDrawerStock} - {
+                          selectedBin?.stocks.find(s => s.stock_code === selectedDrawerStock)?.stock_name || ''
+                        }
+                      </span>
+                      <span style={{ marginLeft: 16, color: '#666', fontWeight: 'bold' }}>
+                        数据日期 {date2}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (drawerKLineChartInstance.current) {
+                          drawerKLineChartInstance.current.dispose();
+                          drawerKLineChartInstance.current = null;
+                        }
+                        setSelectedDrawerStock('');
+                        setDrawerKLineData([]);
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: '#999',
+                        fontSize: '16px',
+                        lineHeight: '1',
+                        padding: '0',
+                        width: '20px',
+                        height: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
                 <Spin spinning={drawerKLineLoading} tip="加载中...">
                   <div

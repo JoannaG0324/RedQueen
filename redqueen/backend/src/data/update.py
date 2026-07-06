@@ -338,27 +338,30 @@ def update_stock_spot_data():
         # 将数据插入数据库（如果表不存在会自动创建）
         stock_zh_a_spot_em_df.to_sql('stock_daily_qfq_new', engine, if_exists='append', index=False)
         print(f"成功插入 {len(stock_zh_a_spot_em_df)} 条数据到 stock_daily_qfq_new 表")
-        
-        # 同时将数据写入stock_daily_qfq表，只保留该表需要的字段
-        # 创建stock_daily_qfq表所需的数据副本
-        stock_daily_qfq_df = stock_zh_a_spot_em_df.copy()
-        
-        # 添加outstanding_share字段，对应circulating_market_value
-        stock_daily_qfq_df['outstanding_share'] = stock_daily_qfq_df['circulating_market_value']
-        
-        # 只保留stock_daily_qfq表需要的字段
-        stock_daily_qfq_columns = ['stock_code', 'stock_name', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'change_rate', 'change_amount', 'turnover']
-        stock_daily_qfq_df = stock_daily_qfq_df[stock_daily_qfq_columns]
-        
-        # 过滤停牌股票数据（close > 0）
-        stock_daily_qfq_df = stock_daily_qfq_df[(stock_daily_qfq_df['close'] > 0) & (stock_daily_qfq_df['open'] > 0)]
-        
-        # 将数据插入stock_daily_qfq表
-        stock_daily_qfq_df.to_sql('stock_daily_qfq', engine, if_exists='append', index=False)
-        message = f"成功插入 {len(stock_daily_qfq_df)} 条数据到 stock_daily_qfq 表（已过滤停牌股票）"
-        print(message)
-        
+
+        message = f"成功插入 {len(stock_zh_a_spot_em_df)} 条数据到 stock_daily_qfq_new 表"
         return message
+        
+        # # 同时将数据写入stock_daily_qfq表，只保留该表需要的字段
+        # # 创建stock_daily_qfq表所需的数据副本
+        # stock_daily_qfq_df = stock_zh_a_spot_em_df.copy()
+        
+        # # 添加outstanding_share字段，对应circulating_market_value
+        # stock_daily_qfq_df['outstanding_share'] = stock_daily_qfq_df['circulating_market_value']
+        
+        # # 只保留stock_daily_qfq表需要的字段
+        # stock_daily_qfq_columns = ['stock_code', 'stock_name', 'date', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'change_rate', 'change_amount', 'turnover']
+        # stock_daily_qfq_df = stock_daily_qfq_df[stock_daily_qfq_columns]
+        
+        # # 过滤停牌股票数据（close > 0）
+        # stock_daily_qfq_df = stock_daily_qfq_df[(stock_daily_qfq_df['close'] > 0) & (stock_daily_qfq_df['open'] > 0)]
+        
+        # # 将数据插入stock_daily_qfq表
+        # stock_daily_qfq_df.to_sql('stock_daily_qfq', engine, if_exists='append', index=False)
+        # message = f"成功插入 {len(stock_daily_qfq_df)} 条数据到 stock_daily_qfq 表（已过滤停牌股票）"
+        # print(message)
+        
+        # return message
         
     except Exception as e:
         print(f"更新股票实时数据时出错: {e}")
