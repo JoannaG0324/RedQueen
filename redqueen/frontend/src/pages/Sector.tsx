@@ -671,7 +671,8 @@ const Sector: React.FC = () => {
       title: 'Sector',
       dataIndex: 'concept_name',
       key: 'concept_name',
-      width: 150,
+      width: 110,
+      ellipsis: true,
       sorter: (a, b) => a.concept_name.localeCompare(b.concept_name),
       sortOrder: sortConfig && sortConfig.key === 'concept_name' ? sortConfig.direction : false,
       onHeaderCell: () => ({
@@ -682,7 +683,7 @@ const Sector: React.FC = () => {
       title: 'Count',
       dataIndex: 'stock_count',
       key: 'stock_count',
-      width: 80,
+      width: 60,
       align: 'right',
       sorter: (a, b) => (a.stock_count || 0) - (b.stock_count || 0),
       sortOrder: sortConfig && sortConfig.key === 'stock_count' ? sortConfig.direction : false,
@@ -694,10 +695,34 @@ const Sector: React.FC = () => {
       )
     },
     {
+      title: 'VOL',
+      key: 'avg_volume',
+      width: 80,
+      align: 'right',
+      sorter: (a, b) => {
+        const aVol = a.total_volume && a.stock_count ? a.total_volume / a.stock_count : 0;
+        const bVol = b.total_volume && b.stock_count ? b.total_volume / b.stock_count : 0;
+        return aVol - bVol;
+      },
+      sortOrder: sortConfig && sortConfig.key === 'avg_volume' ? sortConfig.direction : false,
+      onHeaderCell: () => ({
+        onClick: () => handleSort('avg_volume')
+      }),
+      render: (_: any, record: ConceptPlateData) => {
+        const vol = record.total_volume;
+        const count = record.stock_count;
+        if (!vol || !count) {
+          return <span>-</span>;
+        }
+        const avgVol = vol / count ;
+        return <span>{avgVol.toFixed(0)}</span>;
+      }
+    },
+    {
       title: 'Chg%',
       dataIndex: 'avg_change_ratio',
       key: 'avg_change_ratio',
-      width: 100,
+      width: 75,
       align: 'right',
       sorter: (a, b) => (a.avg_change_ratio || 0) - (b.avg_change_ratio || 0),
       sortOrder: sortConfig && sortConfig.key === 'avg_change_ratio' ? sortConfig.direction : false,
@@ -714,7 +739,7 @@ const Sector: React.FC = () => {
       title: 'Chg-1%',
       dataIndex: 'chg_1',
       key: 'chg_1',
-      width: 100,
+      width: 70,
       align: 'right',
       sorter: (a, b) => (a.chg_1 ?? 0) - (b.chg_1 ?? 0),
       sortOrder: sortConfig && sortConfig.key === 'chg_1' ? sortConfig.direction : false,
@@ -731,7 +756,7 @@ const Sector: React.FC = () => {
       title: 'Chg-2%',
       dataIndex: 'chg_2',
       key: 'chg_2',
-      width: 100,
+      width: 70,
       align: 'right',
       sorter: (a, b) => (a.chg_2 ?? 0) - (b.chg_2 ?? 0),
       sortOrder: sortConfig && sortConfig.key === 'chg_2' ? sortConfig.direction : false,
@@ -748,7 +773,7 @@ const Sector: React.FC = () => {
       title: 'Chg-3%',
       dataIndex: 'chg_3',
       key: 'chg_3',
-      width: 100,
+      width: 70,
       align: 'right',
       sorter: (a, b) => (a.chg_3 ?? 0) - (b.chg_3 ?? 0),
       sortOrder: sortConfig && sortConfig.key === 'chg_3' ? sortConfig.direction : false,
@@ -765,7 +790,7 @@ const Sector: React.FC = () => {
       title: 'Chg-4%',
       dataIndex: 'chg_4',
       key: 'chg_4',
-      width: 100,
+      width: 70,
       align: 'right',
       sorter: (a, b) => (a.chg_4 ?? 0) - (b.chg_4 ?? 0),
       sortOrder: sortConfig && sortConfig.key === 'chg_4' ? sortConfig.direction : false,
@@ -782,7 +807,7 @@ const Sector: React.FC = () => {
       title: 'Chg-5%',
       dataIndex: 'chg_5',
       key: 'chg_5',
-      width: 100,
+      width: 70,
       align: 'right',
       sorter: (a, b) => (a.chg_5 ?? 0) - (b.chg_5 ?? 0),
       sortOrder: sortConfig && sortConfig.key === 'chg_5' ? sortConfig.direction : false,
@@ -868,7 +893,7 @@ const Sector: React.FC = () => {
       title: 'Days',
       dataIndex: 'growth_streak_days',
       key: 'growth_streak_days',
-      width: 60,
+      width: 80,
       align: 'right',
       sorter: (a, b) => (a.growth_streak_days || 0) - (b.growth_streak_days || 0),
       sortOrder: stockSortConfig && stockSortConfig.key === 'growth_streak_days' ? stockSortConfig.direction : 'descend',
@@ -884,7 +909,7 @@ const Sector: React.FC = () => {
       title: 'Days%',
       dataIndex: 'growth_streak_pct',
       key: 'growth_streak_pct',
-      width: 70,
+      width: 80,
       align: 'right',
       sorter: (a, b) => (a.growth_streak_pct || 0) - (b.growth_streak_pct || 0),
       sortOrder: stockSortConfig && stockSortConfig.key === 'growth_streak_pct' ? stockSortConfig.direction : false,
@@ -903,7 +928,7 @@ const Sector: React.FC = () => {
     {
       title: 'per%',
       key: 'chg_days_pct',
-      width: 65,
+      width: 80,
       align: 'right',
       sorter: (a, b) => {
         const aDays = a.growth_streak_days || 0;
@@ -934,7 +959,7 @@ const Sector: React.FC = () => {
       title: 'VOL%',
       dataIndex: 'volume_pct',
       key: 'volume_pct',
-      width: 70,
+      width: 80,
       align: 'right',
       sorter: (a, b) => (a.volume_pct || 0) - (b.volume_pct || 0),
       sortOrder: stockSortConfig && stockSortConfig.key === 'volume_pct' ? stockSortConfig.direction : false,
@@ -955,12 +980,28 @@ const Sector: React.FC = () => {
       title: 'Dh20',
       dataIndex: 'high_20d_last',
       key: 'high_20d_last',
-      width: 55,
+      width: 80,
       align: 'right',
       sorter: (a, b) => (a.high_20d_last || 0) - (b.high_20d_last || 0),
       sortOrder: stockSortConfig && stockSortConfig.key === 'high_20d_last' ? stockSortConfig.direction : false,
       onHeaderCell: () => ({
         onClick: () => handleStockSort('high_20d_last')
+      }),
+      render: (text: number | null) => {
+        const value = typeof text === 'number' ? text : parseInt(text || '0') || 0;
+        return <span style={{ fontSize: '12px' }}>{value > 0 ? value : '0'}</span>;
+      },
+    },
+    {
+      title: 'Dh120',
+      dataIndex: 'high_120d_last',
+      key: 'high_120d_last',
+      width: 80,
+      align: 'right',
+      sorter: (a, b) => (a.high_120d_last || 0) - (b.high_120d_last || 0),
+      sortOrder: stockSortConfig && stockSortConfig.key === 'high_120d_last' ? stockSortConfig.direction : false,
+      onHeaderCell: () => ({
+        onClick: () => handleStockSort('high_120d_last')
       }),
       render: (text: number | null) => {
         const value = typeof text === 'number' ? text : parseInt(text || '0') || 0;
@@ -1015,26 +1056,30 @@ const Sector: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '800px' }}>
-      <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-        <input
-          type="date"
-          value={selectedDate}
-          onChange={(e) => handleDateChange(e.target.value)}
-          style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '32px', marginRight: '12px' }}
-        />
-        <Input
-          placeholder="Search by Sector"
-          style={{ width: 200, marginRight: '12px' }}
-          value={searchName}
-          onChange={(e) => setSearchName(e.target.value)}
-          allowClear
-        />
-      </div>
-
       <div style={{ width: '100%', flex: 1, display: 'flex', gap: 12, overflowX: 'hidden' }}>
         <div style={{ flex: 5.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, overflowX: 'auto' }}>
+          <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column', minHeight: '900px' }} title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+              <span style={{ fontWeight: 'bold', fontSize: '14px' }}>概念板块</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => handleDateChange(e.target.value)}
+                  style={{ padding: '4px 11px', border: '1px solid #d9d9d9', borderRadius: '4px', height: '28px', fontSize: '12px' }}
+                />
+                <Input
+                  placeholder="Search by Sector"
+                  style={{ width: 160 }}
+                  value={searchName}
+                  onChange={(e) => setSearchName(e.target.value)}
+                  allowClear
+                  size="small"
+                />
+              </div>
+            </div>
+          }>
+            <div style={{ marginTop: -12, marginBottom: 12 , overflowX: 'auto' }}>  {/*  与上方间距 */}
               <div style={{ minWidth: 800 }}>
                 <Table
                   columns={sectorColumns}
@@ -1043,7 +1088,7 @@ const Sector: React.FC = () => {
                   pagination={false}
                   size="small"
                   loading={loading}
-                  scroll={{ y: 'calc(100vh - 320px)' }}
+                  scroll={{ y: 'calc(100vh - 220px)' }}
                   rowClassName={(record: any) =>
                     record && record.concept_id === selectedSector?.concept_id ? 'ant-table-row-hover-selected' : ''
                   }
@@ -1058,9 +1103,9 @@ const Sector: React.FC = () => {
             </div>
           </Card>
         </div>
-
+        
         <div style={{ flex: 4.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Card style={{ flex: 1, minWidth: 600, padding: 0, display: 'flex', flexDirection: 'column', minHeight: '600px' }} title={
+          <Card style={{ flex: 1, minWidth: 900, padding: 0, display: 'flex', flexDirection: 'column', minHeight: '900px' }} title={
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
               <div>
                 <span>{selectedSector?.concept_name || '请选择概念'}</span>
@@ -1164,7 +1209,7 @@ const Sector: React.FC = () => {
                 pagination={false}
                 size="small"
                 loading={stockLoading}
-                scroll={{ y: 'calc(100vh - 720px)' }}
+                scroll={{ y: 'calc(100vh - 600px)' }}
                 locale={{
                   emptyText: selectedSector ? '暂无个股数据' : '请选择概念板块'
                 }}

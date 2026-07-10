@@ -17,6 +17,9 @@ interface IndustryData {
   dev_5: number;
   dev_20: number;
   dev_60: number;
+  growth_streak_days?: number;
+  growth_streak_pct?: number;
+  growth_streak_days_loose?: number;
 }
 
 // K线数据类型定义
@@ -758,7 +761,7 @@ const Industry: React.FC = () => {
       )
     },
     {
-      title: 'U-days',
+      title: 'Days',
       dataIndex: 'growth_streak_days',
       key: 'growth_streak_days',
       width: 80,
@@ -775,7 +778,7 @@ const Industry: React.FC = () => {
       )
     },
     {
-      title: 'U-pct',
+      title: 'Days%',
       dataIndex: 'growth_streak_pct',
       key: 'growth_streak_pct',
       width: 100,
@@ -788,6 +791,23 @@ const Industry: React.FC = () => {
       render: (text: number) => (
         <span style={{ color: (typeof text === 'number' && text >= 0) ? '#ef232a' : '#14b143' }}>
           {typeof text === 'number' ? text.toFixed(2) : '-'}
+        </span>
+      )
+    },
+    {
+      title: 'Days_L',
+      dataIndex: 'growth_streak_days_loose',
+      key: 'growth_streak_days_loose',
+      width: 80,
+      align: 'right',
+      sorter: (a, b) => (a.growth_streak_days_loose || 0) - (b.growth_streak_days_loose || 0),
+      sortOrder: sortConfig && sortConfig.key === 'growth_streak_days_loose' ? sortConfig.direction : false,
+      onHeaderCell: (column) => ({
+        onClick: () => handleSort('growth_streak_days_loose')
+      }),
+      render: (text: number) => (
+        <span>
+          {typeof text === 'number' ? text.toFixed(1) : '-'}
         </span>
       )
     }

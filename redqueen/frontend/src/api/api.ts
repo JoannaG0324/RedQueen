@@ -179,6 +179,7 @@ export interface ConceptPlateData {
   concept_id: string;
   date: string;
   stock_count: number;
+  total_volume: number | null;
   avg_change_ratio: number;
   chg_1: number | null;
   chg_2: number | null;
@@ -209,6 +210,7 @@ export interface SectorStockData {
   volume_pct: number | null;
   high_20d: number | null;
   high_20d_last: number | null;
+  high_120d_last: number | null;
 }
 
 export interface SectorStockResult {

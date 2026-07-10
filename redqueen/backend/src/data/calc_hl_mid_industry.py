@@ -159,6 +159,14 @@ def _calc_one_industry(df_industry: pd.DataFrame) -> pd.DataFrame:
             group_id = diff.cumsum()
             df.loc[valid_mask, "high_20d_last"] = df[valid_mask].groupby(group_id[valid_mask]).cumcount() + 1
 
+    df["high_120d_last"] = np.nan
+    if "high_120d" in df.columns:
+        valid_mask_120 = ~df["high_120d"].isna()
+        if valid_mask_120.any():
+            diff_120 = df["high_120d"].ne(df["high_120d"].shift(1))
+            group_id_120 = diff_120.cumsum()
+            df.loc[valid_mask_120, "high_120d_last"] = df[valid_mask_120].groupby(group_id_120[valid_mask_120]).cumcount() + 1
+
     return df
 
 
@@ -192,6 +200,7 @@ def ensure_target_table() -> None:
       high_120d_date DATE DEFAULT NULL,
       low_120d  DOUBLE DEFAULT NULL,
       low_120d_date  DATE DEFAULT NULL,
+      high_120d_last INT DEFAULT NULL COMMENT '120D均价高点连续保持天数',
 
       calc_time DATETIME DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '指标计算更新时间',
@@ -234,7 +243,7 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
         "high_20d", "high_20d_date", "low_20d", "low_20d_date", "high_20d_last",
         "high_60d", "high_60d_date", "low_60d", "low_60d_date",
         "high_90d", "high_90d_date", "low_90d", "low_90d_date",
-        "high_120d", "high_120d_date", "low_120d", "low_120d_date",
+        "high_120d", "high_120d_date", "low_120d", "low_120d_date", "high_120d_last",
     ]
     rows = []
     for _, r in df_out.iterrows():
@@ -243,6 +252,9 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
             "date": _format_date(r["date"]),
             "high_20d_last": (
                 None if pd.isna(r.get("high_20d_last")) else int(r["high_20d_last"])
+            ),
+            "high_120d_last": (
+                None if pd.isna(r.get("high_120d_last")) else int(r["high_120d_last"])
             ),
         }
         for w in WINDOWS:
@@ -436,7 +448,7 @@ def run_incremental(start_date: Optional[str] = None,
 if __name__ == "__main__":
     # 默认只跑"最新交易日一天"的增量。
     # 需要全量或自定义起始日时：
-    # stats = run_full(start_date="2024-06-01")
-    #   stats = run_from_date(start_date="2023-06-01")
+    stats = run_full(start_date="2024-06-01")
+    #  stats = run_from_date(start_date="2023-06-01")
     stats = run_incremental()
     print("完成，统计信息:", stats)

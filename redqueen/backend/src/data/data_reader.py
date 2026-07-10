@@ -217,7 +217,7 @@ class DataReader:
                 f.change_percent, 
                 i.close as close_price, 
                 c.ma3, c.ma5, c.ma10, c.ma20, c.ma60,
-                c.growth_streak_days, c.growth_streak_pct
+                c.growth_streak_days, c.growth_streak_pct, c.growth_streak_days_loose
             FROM industry_flow_ODS f 
             JOIN industry_ths m ON f.industry_name = m.industry_name 
             LEFT JOIN industry_ths_index i ON m.industry_code = i.industry_code AND i.date = f.date 
@@ -255,7 +255,8 @@ class DataReader:
                     "dev_20": round(dev_20, 2),
                     "dev_60": round(dev_60, 2),
                     "growth_streak_days": float(row.growth_streak_days) if row.growth_streak_days else None,
-                    "growth_streak_pct": float(row.growth_streak_pct) if row.growth_streak_pct else None
+                    "growth_streak_pct": float(row.growth_streak_pct) if row.growth_streak_pct else None,
+                    "growth_streak_days_loose": float(row.growth_streak_days_loose) if row.growth_streak_days_loose else None
                 })
             
             return industry_data

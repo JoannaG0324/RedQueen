@@ -64,6 +64,9 @@ interface StockData {
   volume_pct: number | null;
   growth_streak_days: number | null;
   growth_streak_pct: number | null;
+  high_20d: number | null;
+  high_20d_last: number | null;
+  high_120d_last: number | null;
 }
 
 interface TreemapData {
@@ -1500,6 +1503,34 @@ const Heatmap: React.FC = () => {
                       <span style={{ marginLeft: 16, color: '#666', fontWeight: 'bold' }}>
                         数据日期 {date2}
                       </span>
+                      <span style={{ marginLeft: 16 }}>
+                        <a
+                          href={(() => {
+                            let market = '0';
+                            if (selectedDrawerStock.startsWith('60') || selectedDrawerStock.startsWith('68')) {
+                              market = '1';
+                            } else if (selectedDrawerStock.startsWith('00') || selectedDrawerStock.startsWith('30')) {
+                              market = '0';
+                            }
+                            return `https://quote.eastmoney.com/basic/h5chart-iframe.html?code=${selectedDrawerStock}&market=${market}&type=r`;
+                          })()}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ textDecoration: 'none', color: '#1890ff' }}
+                        >
+                          分时
+                        </a>
+                      </span>
+                      <span style={{ marginLeft: 16 }}>
+                        <a
+                          href={`https://q.stock.sohu.com/cn/${selectedDrawerStock}/index.shtml`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ textDecoration: 'none', color: '#1890ff' }}
+                        >
+                          SOHU
+                        </a>
+                      </span>
                     </div>
                     <button
                       onClick={() => {
@@ -1550,7 +1581,7 @@ const Heatmap: React.FC = () => {
                 size="small"
                 dataSource={selectedBin.stocks}
                 pagination={{
-                  pageSize: 15,
+                  pageSize: 10,
                   showSizeChanger: true,
                   showTotal: (total) => `共 ${total} 只`
                 }}
@@ -1648,7 +1679,7 @@ const Heatmap: React.FC = () => {
                       (a.change_pct ?? -Infinity) - (b.change_pct ?? -Infinity)
                   },
                   {
-                    title: 'Turnover%',
+                    title: 'Tover%',
                     dataIndex: 'turnover',
                     key: 'turnover',
                     width: 90,
@@ -1659,7 +1690,7 @@ const Heatmap: React.FC = () => {
                       (a.turnover ?? -Infinity) - (b.turnover ?? -Infinity)
                   },
                   {
-                    title: 'Volume%',
+                    title: 'VOL%',
                     dataIndex: 'volume_pct',
                     key: 'volume_pct',
                     width: 90,
@@ -1711,6 +1742,60 @@ const Heatmap: React.FC = () => {
                       const bv = Number.isFinite(b.growth_streak_pct) ? (b.growth_streak_pct as number) : -Infinity;
                       return av - bv;
                     }
+                  },
+                  {
+                    title: 'Dh20',
+                    dataIndex: 'high_20d_last',
+                    key: 'high_20d_last',
+                    width: 55,
+                    align: 'right',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.high_20d_last ?? -Infinity) - (b.high_20d_last ?? -Infinity),
+                    render: (text: number | null) => {
+                      const value = typeof text === 'number' ? text : parseInt(text || '0') || 0;
+                      return <span style={{ fontSize: '12px' }}>{value > 0 ? value : '0'}</span>;
+                    },
+                  },
+                  {
+                    title: 'Dh120',
+                    dataIndex: 'high_120d_last',
+                    key: 'high_120d_last',
+                    width: 55,
+                    align: 'right',
+                    sorter: (a: StockData, b: StockData) =>
+                      (a.high_120d_last ?? -Infinity) - (b.high_120d_last ?? -Infinity),
+                    render: (text: number | null) => {
+                      const value = typeof text === 'number' ? text : parseInt(text || '0') || 0;
+                      return <span style={{ fontSize: '12px' }}>{value > 0 ? value : '0'}</span>;
+                    },
+                  },
+                  {
+                    title: 'C/H%',
+                    key: 'close_h20_pct',
+                    width: 70,
+                    align: 'right',
+                    sorter: (a: StockData, b: StockData) => {
+                      const aH20 = typeof a.high_20d === 'number' ? a.high_20d : parseFloat(a.high_20d || '0') || 0;
+                      const bH20 = typeof b.high_20d === 'number' ? b.high_20d : parseFloat(b.high_20d || '0') || 0;
+                      const aClose = typeof a.close === 'number' ? a.close : parseFloat(a.close || '0') || 0;
+                      const bClose = typeof b.close === 'number' ? b.close : parseFloat(b.close || '0') || 0;
+                      const aVal = aH20 > 0 ? ((aClose / aH20) - 1) * 100 : 0;
+                      const bVal = bH20 > 0 ? ((bClose / bH20) - 1) * 100 : 0;
+                      return aVal - bVal;
+                    },
+                    render: (_: any, record: StockData) => {
+                      const h20 = typeof record.high_20d === 'number' ? record.high_20d : parseFloat(record.high_20d || '0') || 0;
+                      const close = typeof record.close === 'number' ? record.close : parseFloat(record.close || '0') || 0;
+                      if (h20 <= 0) {
+                        return <span style={{ fontSize: '12px' }}>-</span>;
+                      }
+                      const value = ((close / h20) - 1) * 100;
+                      return (
+                        <span style={{ color: value >= 0 ? '#ef232a' : '#11c26d', fontSize: '12px' }}>
+                          {value >= 0 ? '+' : ''}{value.toFixed(1)}
+                        </span>
+                      );
+                    },
                   },
                   {
                     title: 'Period%',

@@ -62,6 +62,8 @@ interface StockData {
   chg_pct_20?: number;
   growth_streak_days: number;
   growth_streak_pct: number;
+  growth_streak_days_loose?: number;
+  high_120d_last?: number;
   market_cap_r?: number;
   volume_pct?: number;
   turnover?: number;
@@ -1615,9 +1617,8 @@ const StockList: React.FC = () => {
       title: 'Industry',
       dataIndex: 'industry',
       key: 'industry',
-      width: 150,
+      width: 80,
       align: 'center',
-      fixed: 'left',
       sorter: (a: any, b: any) => {
         const strA = a.industry ?? '';
         const strB = b.industry ?? '';
@@ -1700,7 +1701,11 @@ const StockList: React.FC = () => {
       key: 'growth_streak_days',
       width: 80,
       align: 'right',
-      sorter: (a: any, b: any) => (a.growth_streak_days || 0) - (b.growth_streak_days || 0),
+      sorter: (a: any, b: any) => {
+        const valA = typeof a.growth_streak_days === 'number' ? a.growth_streak_days : parseFloat(a.growth_streak_days) || 0;
+        const valB = typeof b.growth_streak_days === 'number' ? b.growth_streak_days : parseFloat(b.growth_streak_days) || 0;
+        return valA - valB;
+      },
       render: (text: any) => {
         const value = typeof text === 'number' ? text : parseFloat(text) || 0;
         return Math.floor(value);
@@ -1723,19 +1728,19 @@ const StockList: React.FC = () => {
       },
     },
     {
-      title: 'per_Days%',
+      title: 'u_Days%',
       key: 'chg_days_pct',
       width: 100,
       align: 'right',
       sorter: (a: any, b: any) => {
-        const daysA = a.growth_streak_days || 0;
-        const daysB = b.growth_streak_days || 0;
-        const valA = daysA > 0 ? (a.growth_streak_pct || 0) / daysA : 0;
-        const valB = daysB > 0 ? (b.growth_streak_pct || 0) / daysB : 0;
+        const daysA = typeof a.growth_streak_days === 'number' ? a.growth_streak_days : parseInt(a.growth_streak_days) || 0;
+        const daysB = typeof b.growth_streak_days === 'number' ? b.growth_streak_days : parseInt(b.growth_streak_days) || 0;
+        const valA = daysA > 0 ? ((typeof a.growth_streak_pct === 'number' ? a.growth_streak_pct : parseFloat(a.growth_streak_pct) || 0)) / daysA : 0;
+        const valB = daysB > 0 ? ((typeof b.growth_streak_pct === 'number' ? b.growth_streak_pct : parseFloat(b.growth_streak_pct) || 0)) / daysB : 0;
         return valA - valB;
       },
       render: (_: any, record: any) => {
-        const days = record.growth_streak_days || 0;
+        const days = typeof record.growth_streak_days === 'number' ? record.growth_streak_days : parseInt(record.growth_streak_days) || 0;
         if (days === 0) {
           return <Text>-</Text>;
         }
@@ -1746,6 +1751,22 @@ const StockList: React.FC = () => {
             {value >= 0 ? '+' : ''}{value.toFixed(1)}
           </Text>
         );
+      },
+    },
+    {
+      title: 'Days_L',
+      dataIndex: 'growth_streak_days_loose',
+      key: 'growth_streak_days_loose',
+      width: 80,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = typeof a.growth_streak_days_loose === 'number' ? a.growth_streak_days_loose : parseFloat(a.growth_streak_days_loose) || 0;
+        const valB = typeof b.growth_streak_days_loose === 'number' ? b.growth_streak_days_loose : parseFloat(b.growth_streak_days_loose) || 0;
+        return valA - valB;
+      },
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseInt(text) || 0;
+        return value > 0 ? <Text>{value}</Text> : <Text>0</Text>;
       },
     },
     {
@@ -1804,6 +1825,22 @@ const StockList: React.FC = () => {
       width: 80,
       align: 'right',
       sorter: (a: any, b: any) => (a.high_20d_last || 0) - (b.high_20d_last || 0),
+      render: (text: any) => {
+        const value = typeof text === 'number' ? text : parseInt(text) || 0;
+        return value > 0 ? <Text>{value}</Text> : <Text>0</Text>;
+      },
+    },
+    {
+      title: 'Dh120',
+      dataIndex: 'high_120d_last',
+      key: 'high_120d_last',
+      width: 80,
+      align: 'right',
+      sorter: (a: any, b: any) => {
+        const valA = typeof a.high_120d_last === 'number' ? a.high_120d_last : parseFloat(a.high_120d_last) || 0;
+        const valB = typeof b.high_120d_last === 'number' ? b.high_120d_last : parseFloat(b.high_120d_last) || 0;
+        return valA - valB;
+      },
       render: (text: any) => {
         const value = typeof text === 'number' ? text : parseInt(text) || 0;
         return value > 0 ? <Text>{value}</Text> : <Text>0</Text>;
@@ -2113,7 +2150,7 @@ const StockList: React.FC = () => {
         {/* 左侧股票列表 */}
         <div style={{ flex: 5.5, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Card style={{ flex: 1, padding: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, overflowX: 'auto' }}>
+            <div style={{  marginTop: -12, marginBottom: 10 ,flex: 1, overflowX: 'auto' }}>  {/*  与上方间距 */}
               <div style={{ minWidth: 600 }}>
                 <Table
                   columns={columns}

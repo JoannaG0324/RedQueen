@@ -394,7 +394,7 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             sdqc.date, sdqc.stock_code, COALESCE(sd.stock_name, its.stock_name) as stock_name,
             it.industry_name as industry,
             sd.close, sd.change_rate, sdqc.chg_pct_5, sdqc.chg_pct_20, sd.turnover,
-            sdqc.growth_streak_days, sdqc.growth_streak_pct,
+            sdqc.growth_streak_days, sdqc.growth_streak_pct, sdqc.growth_streak_days_loose,
             sdqc.ma5_growth_streak_days, sdqc.ma5_growth_streak_pct,
             sdqc.ma10_growth_streak_days, sdqc.ma10_growth_streak_pct,
             sd.volume,
@@ -405,7 +405,7 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             END as market_cap_r,
             sdqc.volume_pct,
             sdc.high_20d, sdc.high_20d_date, sdc.high_60d,
-            sdc.high_20d_last as high_20d_last
+            sdc.high_20d_last as high_20d_last, sdc.high_120d_last as high_120d_last
         FROM stock_daily_qfq_calc sdqc
         LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date
         LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code
@@ -433,17 +433,19 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             "turnover": row[8],
             "growth_streak_days": row[9],
             "growth_streak_pct": row[10],
-            "ma5_growth_streak_days": row[11],
-            "ma5_growth_streak_pct": row[12],
-            "ma10_growth_streak_days": row[13],
-            "ma10_growth_streak_pct": row[14],
-            "volume": row[15],
-            "market_cap_r": row[16],
-            "volume_pct": row[17],
-            "high_20d": row[18],
-            "high_20d_date": row[19].isoformat() if row[19] else None,
-            "high_60d": row[20],
-            "high_20d_last": row[21]
+            "growth_streak_days_loose": row[11],
+            "ma5_growth_streak_days": row[12],
+            "ma5_growth_streak_pct": row[13],
+            "ma10_growth_streak_days": row[14],
+            "ma10_growth_streak_pct": row[15],
+            "volume": row[16],
+            "market_cap_r": row[17],
+            "volume_pct": row[18],
+            "high_20d": row[19],
+            "high_20d_date": row[20].isoformat() if row[20] else None,
+            "high_60d": row[21],
+            "high_20d_last": row[22],
+            "high_120d_last": row[23]
         })
 
     return stock_data_list
@@ -658,7 +660,13 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 # 连续增长天数
                 COALESCE(sdqc.growth_streak_days, 0) as growth_streak_days,
                 # 连续增长累计涨幅
-                COALESCE(sdqc.growth_streak_pct, 0) as growth_streak_pct
+                COALESCE(sdqc.growth_streak_pct, 0) as growth_streak_pct,
+                # 20日高点
+                sdc.high_20d as high_20d,
+                # 20日高点距今天数
+                sdc.high_20d_last as high_20d_last,
+                # 120日高点距今天数
+                sdc.high_120d_last as high_120d_last
             FROM industry_ths it
             JOIN industry_ths_stock its ON it.industry_code = its.industry_code
             LEFT JOIN stock_daily_analysis s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
@@ -673,6 +681,7 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
             LEFT JOIN industry_ths_index i1 ON it.industry_code = i1.industry_code AND i1.date = :date1
             LEFT JOIN industry_ths_index i2 ON it.industry_code = i2.industry_code AND i2.date = :date2
             LEFT JOIN stock_daily_qfq_calc sdqc ON its.stock_code = sdqc.stock_code AND sdqc.date = :date2
+            LEFT JOIN stock_daily_calc_update sdc ON its.stock_code = sdc.stock_code AND sdc.date = :date2
             WHERE it.flag = 1
             # 过滤异常数据
             AND (s2.turnover IS NULL OR s2.turnover > 0)
@@ -701,7 +710,10 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 "turnover": float(row[9]) if row[9] else None,
                 "volume_pct": float(row[10]) if row[10] else None,
                 "growth_streak_days": int(row[11]) if row[11] else None,
-                "growth_streak_pct": float(row[12]) if row[12] else None
+                "growth_streak_pct": float(row[12]) if row[12] else None,
+                "high_20d": float(row[13]) if row[13] else None,
+                "high_20d_last": int(row[14]) if row[14] else None,
+                "high_120d_last": int(row[15]) if row[15] else None
             })
         
         return heatmap_data
@@ -1414,6 +1426,7 @@ async def get_sector_list(target_date: str = None, db: Session = Depends(get_db)
                         "concept_id": row.concept_id,
                         "date": str(target_date_obj),
                         "stock_count": row.stock_count,
+                        "total_volume": row.total_volume,
                         "avg_change_ratio": float(row.avg_change_ratio) if row.avg_change_ratio else 0.0,
                         "chg_1": None,
                         "chg_2": None,
@@ -1430,6 +1443,7 @@ async def get_sector_list(target_date: str = None, db: Session = Depends(get_db)
                     if i == 0:
                         data_map[concept_name]["avg_change_ratio"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
                         data_map[concept_name]["stock_count"] = row.stock_count
+                        data_map[concept_name]["total_volume"] = row.total_volume
                     elif i == 1:
                         data_map[concept_name]["chg_1"] = float(row.avg_change_ratio) if row.avg_change_ratio else 0.0
                     elif i == 2:
@@ -1497,7 +1511,8 @@ async def get_sector_stocks(concept_id: str, concept_name: str, date: str = None
                 "growth_streak_pct": None,
                 "volume_pct": None,
                 "high_20d": None,
-                "high_20d_last": None
+                "high_20d_last": None,
+                "high_120d_last": None
             }
         
         qfq_calc_sql = f"""
@@ -1517,7 +1532,7 @@ async def get_sector_stocks(concept_id: str, concept_name: str, date: str = None
             print(f"查询 stock_daily_qfq_calc 失败: {str(e)}")
         
         calc_update_sql = f"""
-            SELECT stock_code, high_20d, high_20d_last 
+            SELECT stock_code, high_20d, high_20d_last, high_120d_last 
             FROM stock_daily_calc_update 
             WHERE stock_code IN ({','.join([f"'{code}'" for code in stock_codes])}) 
             AND date = '{target_date}'
@@ -1528,6 +1543,7 @@ async def get_sector_stocks(concept_id: str, concept_name: str, date: str = None
                 if row[0] in stock_data_map:
                     stock_data_map[row[0]]["high_20d"] = float(row[1]) if row[1] else None
                     stock_data_map[row[0]]["high_20d_last"] = int(row[2]) if row[2] else None
+                    stock_data_map[row[0]]["high_120d_last"] = int(row[3]) if row[3] else None
         except Exception as e:
             print(f"查询 stock_daily_calc_update 失败: {str(e)}")
         
@@ -1549,7 +1565,8 @@ async def get_sector_stocks(concept_id: str, concept_name: str, date: str = None
                     "growth_streak_pct": None,
                     "volume_pct": None,
                     "high_20d": None,
-                    "high_20d_last": None
+                    "high_20d_last": None,
+                    "high_120d_last": None
                 })
         
         return {

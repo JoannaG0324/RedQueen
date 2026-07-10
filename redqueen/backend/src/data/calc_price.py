@@ -19,6 +19,8 @@
 - chg_pct_3/5/20：每日收盘价较3/5/20日前收盘价的涨跌幅（%）
 - growth_streak_days：基于收盘价的连涨天数
 - growth_streak_pct：基于收盘价的连涨期间累计涨幅（%）
+- growth_streak_days_loose：宽松模式连涨天数（当日close<前一日close时，若close>=当日open仍算增长）
+- growth_streak_days_loose_pct：宽松模式连涨期间累计涨幅（%）
 - ma5/ma10/ma20_growth_streak_days：基于对应均线的连涨天数
 - ma5/ma10/ma20_growth_streak_pct：基于对应均线的连涨期间累计涨幅（%）
 
@@ -208,7 +210,8 @@ def calculate_growth_streak(df, ma_values=None):
         ma_values: 可选，字典形式，key为ma周期名（如'ma5'），value为对应的ma值数组（升序）
     """
     if df is None or len(df) == 0:
-        result = {"growth_streak_days": [], "growth_streak_pct": []}
+        result = {"growth_streak_days": [], "growth_streak_pct": [],
+                  "growth_streak_days_loose": [], "growth_streak_days_loose_pct": []}
         if ma_values:
             for ma_name in ma_values:
                 result[f"{ma_name}_growth_streak_days"] = []
@@ -217,6 +220,7 @@ def calculate_growth_streak(df, ma_values=None):
 
     asc = _to_asc(df)
     close = asc["close"].astype(float).values
+    open_ = asc["open"].astype(float).values if "open" in asc.columns else None
     n = len(close)
 
     def _calc_streak(values):
@@ -255,10 +259,63 @@ def calculate_growth_streak(df, ma_values=None):
 
         return streak_days, streak_pct
 
+    def _calc_streak_loose():
+        close_desc = close[::-1]
+        open_desc = open_[::-1] if open_ is not None else None
+
+        streak_days = np.zeros(n, dtype=float)
+        streak_pct = np.zeros(n, dtype=float)
+
+        for i in range(n):
+            if pd.isna(close_desc[i]):
+                continue
+
+            N = 0
+            for j in range(i, n):
+                if pd.isna(close_desc[j]):
+                    break
+
+                if j == i:
+                    prev_close = close_desc[j + 1] if j + 1 < n else close_desc[j]
+                else:
+                    prev_close = close_desc[j + 1] if j + 1 < n else close_desc[j]
+
+                if pd.isna(prev_close):
+                    break
+
+                if close_desc[j] > prev_close:
+                    N += 1
+                elif close_desc[j] == prev_close:
+                    pass
+                else:
+                    if open_desc is not None and not pd.isna(open_desc[j]):
+                        if close_desc[j] >= open_desc[j]:
+                            N += 1
+                        else:
+                            break
+                    else:
+                        break
+
+            streak_days[i] = float(N)
+            if N > 0 and i + N < n:
+                base_price = close_desc[i + N]
+                if base_price and base_price != 0:
+                    streak_pct[i] = (close_desc[i] / base_price - 1.0) * 100.0
+                else:
+                    streak_pct[i] = 0.0
+            else:
+                streak_pct[i] = 0.0
+
+        return streak_days, streak_pct
+
     result = {}
     streak_days, streak_pct = _calc_streak(close)
     result["growth_streak_days"] = _fill_none_list(streak_days)
     result["growth_streak_pct"] = _fill_none_list(streak_pct)
+
+    loose_days, loose_pct = _calc_streak_loose()
+    result["growth_streak_days_loose"] = _fill_none_list(loose_days)
+    result["growth_streak_days_loose_pct"] = _fill_none_list(loose_pct)
 
     if ma_values:
         for ma_name, ma_arr in ma_values.items():
@@ -296,6 +353,7 @@ def _calc_rows_for(df_stock, stock_code, dates_filter=None):
                 "volume_pct": None,
                 "chg_pct_3": None, "chg_pct_5": None, "chg_pct_20": None,
                 "growth_streak_days": None, "growth_streak_pct": None,
+                "growth_streak_days_loose": None, "growth_streak_days_loose_pct": None,
                 "ma5_growth_streak_days": None, "ma5_growth_streak_pct": None,
                 "ma10_growth_streak_days": None, "ma10_growth_streak_pct": None,
                 "ma20_growth_streak_days": None, "ma20_growth_streak_pct": None,
@@ -342,6 +400,16 @@ def _calc_rows_for(df_stock, stock_code, dates_filter=None):
             if i < len(growth_results["growth_streak_pct"])
             else None
         )
+        row["growth_streak_days_loose"] = (
+            growth_results["growth_streak_days_loose"][i]
+            if i < len(growth_results["growth_streak_days_loose"])
+            else None
+        )
+        row["growth_streak_days_loose_pct"] = (
+            growth_results["growth_streak_days_loose_pct"][i]
+            if i < len(growth_results["growth_streak_days_loose_pct"])
+            else None
+        )
         for ma_name in ["ma5", "ma10", "ma20"]:
             streak_days_key = f"{ma_name}_growth_streak_days"
             streak_pct_key = f"{ma_name}_growth_streak_pct"
@@ -373,6 +441,7 @@ def _bulk_insert_rows(rows, batch_size=500, max_retries=3):
         ":volume_pct, "
         ":chg_pct_3, :chg_pct_5, :chg_pct_20, "
         ":growth_streak_days, :growth_streak_pct, "
+        ":growth_streak_days_loose, :growth_streak_days_loose_pct, "
         ":ma5_growth_streak_days, :ma5_growth_streak_pct, "
         ":ma10_growth_streak_days, :ma10_growth_streak_pct, "
         ":ma20_growth_streak_days, :ma20_growth_streak_pct"
@@ -384,6 +453,7 @@ def _bulk_insert_rows(rows, batch_size=500, max_retries=3):
         "volume_pct, "
         "chg_pct_3, chg_pct_5, chg_pct_20, "
         "growth_streak_days, growth_streak_pct, "
+        "growth_streak_days_loose, growth_streak_days_loose_pct, "
         "ma5_growth_streak_days, ma5_growth_streak_pct, "
         "ma10_growth_streak_days, ma10_growth_streak_pct, "
         "ma20_growth_streak_days, ma20_growth_streak_pct"
@@ -396,6 +466,7 @@ def _bulk_insert_rows(rows, batch_size=500, max_retries=3):
         "volume_pct = VALUES(volume_pct), "
         "chg_pct_3 = VALUES(chg_pct_3), chg_pct_5 = VALUES(chg_pct_5), chg_pct_20 = VALUES(chg_pct_20), "
         "growth_streak_days = VALUES(growth_streak_days), growth_streak_pct = VALUES(growth_streak_pct), "
+        "growth_streak_days_loose = VALUES(growth_streak_days_loose), growth_streak_days_loose_pct = VALUES(growth_streak_days_loose_pct), "
         "ma5_growth_streak_days = VALUES(ma5_growth_streak_days), ma5_growth_streak_pct = VALUES(ma5_growth_streak_pct), "
         "ma10_growth_streak_days = VALUES(ma10_growth_streak_days), ma10_growth_streak_pct = VALUES(ma10_growth_streak_pct), "
         "ma20_growth_streak_days = VALUES(ma20_growth_streak_days), ma20_growth_streak_pct = VALUES(ma20_growth_streak_pct)"
@@ -671,6 +742,7 @@ def _calc_industry_rows_for(df_industry, industry_code, dates_filter=None):
                 "volume_pct": None,
                 "chg_pct_3": None, "chg_pct_5": None, "chg_pct_20": None,
                 "growth_streak_days": None, "growth_streak_pct": None,
+                "growth_streak_days_loose": None, "growth_streak_days_loose_pct": None,
                 "ma5_growth_streak_days": None, "ma5_growth_streak_pct": None,
                 "ma10_growth_streak_days": None, "ma10_growth_streak_pct": None,
                 "ma20_growth_streak_days": None, "ma20_growth_streak_pct": None,
@@ -717,6 +789,16 @@ def _calc_industry_rows_for(df_industry, industry_code, dates_filter=None):
             if i < len(growth_results["growth_streak_pct"])
             else None
         )
+        row["growth_streak_days_loose"] = (
+            growth_results["growth_streak_days_loose"][i]
+            if i < len(growth_results["growth_streak_days_loose"])
+            else None
+        )
+        row["growth_streak_days_loose_pct"] = (
+            growth_results["growth_streak_days_loose_pct"][i]
+            if i < len(growth_results["growth_streak_days_loose_pct"])
+            else None
+        )
         for ma_name in ["ma5", "ma10", "ma20"]:
             streak_days_key = f"{ma_name}_growth_streak_days"
             streak_pct_key = f"{ma_name}_growth_streak_pct"
@@ -748,6 +830,7 @@ def _bulk_insert_industry_rows(rows, batch_size=500, max_retries=3):
         ":volume_pct, "
         ":chg_pct_3, :chg_pct_5, :chg_pct_20, "
         ":growth_streak_days, :growth_streak_pct, "
+        ":growth_streak_days_loose, :growth_streak_days_loose_pct, "
         ":ma5_growth_streak_days, :ma5_growth_streak_pct, "
         ":ma10_growth_streak_days, :ma10_growth_streak_pct, "
         ":ma20_growth_streak_days, :ma20_growth_streak_pct"
@@ -759,6 +842,7 @@ def _bulk_insert_industry_rows(rows, batch_size=500, max_retries=3):
         "volume_pct, "
         "chg_pct_3, chg_pct_5, chg_pct_20, "
         "growth_streak_days, growth_streak_pct, "
+        "growth_streak_days_loose, growth_streak_days_loose_pct, "
         "ma5_growth_streak_days, ma5_growth_streak_pct, "
         "ma10_growth_streak_days, ma10_growth_streak_pct, "
         "ma20_growth_streak_days, ma20_growth_streak_pct"
@@ -771,6 +855,7 @@ def _bulk_insert_industry_rows(rows, batch_size=500, max_retries=3):
         "volume_pct = VALUES(volume_pct), "
         "chg_pct_3 = VALUES(chg_pct_3), chg_pct_5 = VALUES(chg_pct_5), chg_pct_20 = VALUES(chg_pct_20), "
         "growth_streak_days = VALUES(growth_streak_days), growth_streak_pct = VALUES(growth_streak_pct), "
+        "growth_streak_days_loose = VALUES(growth_streak_days_loose), growth_streak_days_loose_pct = VALUES(growth_streak_days_loose_pct), "
         "ma5_growth_streak_days = VALUES(ma5_growth_streak_days), ma5_growth_streak_pct = VALUES(ma5_growth_streak_pct), "
         "ma10_growth_streak_days = VALUES(ma10_growth_streak_days), ma10_growth_streak_pct = VALUES(ma10_growth_streak_pct), "
         "ma20_growth_streak_days = VALUES(ma20_growth_streak_days), ma20_growth_streak_pct = VALUES(ma20_growth_streak_pct)"
@@ -1013,7 +1098,7 @@ if __name__ == "__main__":
     # daily_process_stock_indicators(max_workers=10)
 
     # 示例2: 全量重算所有股票（覆盖表全部数据）
-    # daily_process_stock_indicators(max_workers=10, full_recalc=True)
+    daily_process_stock_indicators(max_workers=10, full_recalc=True)
 
     # 示例3: 全量重算指定股票
     # daily_process_stock_indicators(max_workers=10, full_recalc=True, stock_codes=["600228"])
@@ -1024,7 +1109,7 @@ if __name__ == "__main__":
     # -------------------- 行业指标计算 --------------------
 
     # 示例1: 每日增量更新（默认模式）
-    daily_process_industry_indicators(max_workers=10)
+    # daily_process_industry_indicators(max_workers=10)
 
     # 示例2: 全量重算所有行业（覆盖表全部数据）
     # daily_process_industry_indicators(max_workers=10, full_recalc=True)

@@ -198,6 +198,15 @@ def _calc_one_stock(df_stock: pd.DataFrame) -> pd.DataFrame:
             # 每个 group 内从 1 开始计数
             df.loc[valid_mask, "high_20d_last"] = df[valid_mask].groupby(group_id[valid_mask]).cumcount() + 1
 
+    # 计算 high_120d_last：以每行为基准，往前统计 high_120d 保持不变的天数
+    df["high_120d_last"] = np.nan
+    if "high_120d" in df.columns:
+        valid_mask_120 = ~df["high_120d"].isna()
+        if valid_mask_120.any():
+            diff_120 = df["high_120d"].ne(df["high_120d"].shift(1))
+            group_id_120 = diff_120.cumsum()
+            df.loc[valid_mask_120, "high_120d_last"] = df[valid_mask_120].groupby(group_id_120[valid_mask_120]).cumcount() + 1
+
     return df
 
 
@@ -231,6 +240,7 @@ def ensure_target_table() -> None:
       high_120d_date DATE DEFAULT NULL COMMENT '120D均价高点发生交易日',
       low_120d  DOUBLE DEFAULT NULL COMMENT '120D窗口均价最低点对应原始最低价',
       low_120d_date  DATE DEFAULT NULL COMMENT '120D均价低点发生交易日',
+      high_120d_last INT DEFAULT NULL COMMENT '120D均价高点连续保持天数（往前统计相同值的天数）',
 
       calc_time DATETIME DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '指标计算更新时间',
@@ -278,7 +288,7 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
         "high_20d", "high_20d_date", "low_20d", "low_20d_date", "high_20d_last",
         "high_60d", "high_60d_date", "low_60d", "low_60d_date",
         "high_90d", "high_90d_date", "low_90d", "low_90d_date",
-        "high_120d", "high_120d_date", "low_120d", "low_120d_date",
+        "high_120d", "high_120d_date", "low_120d", "low_120d_date", "high_120d_last",
     ]
     rows = []
     for _, r in df_out.iterrows():
@@ -287,6 +297,9 @@ def upsert_calc_rows(df_out: pd.DataFrame) -> int:
             "date": _format_date(r["date"]),
             "high_20d_last": (
                 None if pd.isna(r.get("high_20d_last")) else int(r["high_20d_last"])
+            ),
+            "high_120d_last": (
+                None if pd.isna(r.get("high_120d_last")) else int(r["high_120d_last"])
             ),
         }
         for w in WINDOWS:
