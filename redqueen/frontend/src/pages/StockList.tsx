@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button, Table, message, Space, Typography, Select, Input, Card, Radio, Drawer, Switch, Spin } from 'antd';
+import { Button, Table, message, Space, Typography, Select, Input, Card, Radio, Drawer, Switch, Spin, Modal, Popconfirm } from 'antd';
 import type { ColumnType } from 'antd/es/table';
-import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
+import { CalendarOutlined, RocketOutlined, SendOutlined, UserOutlined, ReloadOutlined, StarFilled, StarOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import * as echarts from 'echarts';
-import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite, getFavoriteOne, getStockSectors } from '../api/api';
+import { getStockList, getStockKLineData, getLatestTradingDay, analyzeOpportunityStocks as analyzeOpportunityStocksAPI, getSkills, getFavoriteList, upsertFavorite, getFavoriteOne, getStockSectors, batchUpdateFavoriteTag, batchDeleteFavoriteByTag } from '../api/api';
 
 const MARKET_OPTIONS = [
   { value: 'SH_60', label: 'SH_60', prefixes: ['60'] },
@@ -477,6 +477,37 @@ const StockList: React.FC = () => {
   const [sectors, setSectors] = useState<any[]>([]);
   const [sectorsLoaded, setSectorsLoaded] = useState<boolean>(false);
   const [selectedTagFilter, setSelectedTagFilter] = useState<string>('');
+  const [tagEditModalVisible, setTagEditModalVisible] = useState<boolean>(false);
+  const [tagEditOldValue, setTagEditOldValue] = useState<string>('');
+  const [tagEditNewValue, setTagEditNewValue] = useState<string>('');
+
+  // 批量修改 tag
+  const handleBatchUpdateTag = async () => {
+    if (!tagEditNewValue.trim()) {
+      message.warning('新标签不能为空');
+      return;
+    }
+    try {
+      const result = await batchUpdateFavoriteTag(tagEditOldValue, tagEditNewValue.trim());
+      message.success(`已更新 ${result.updated_count} 条收藏记录`);
+      setTagEditModalVisible(false);
+      // 刷新收藏列表
+      await loadFavorites();
+    } catch (e: any) {
+      message.error('批量修改标签失败: ' + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  // 批量取消收藏
+  const handleBatchDeleteTag = async (tag: string) => {
+    try {
+      const result = await batchDeleteFavoriteByTag(tag);
+      message.success(`已取消 ${result.deleted_count} 条收藏`);
+      await loadFavorites();
+    } catch (e: any) {
+      message.error('批量取消收藏失败: ' + (e.response?.data?.detail || e.message));
+    }
+  };
 
   // 从后端加载收藏列表（组件首次挂载时）
   const loadFavorites = async () => {
@@ -546,7 +577,8 @@ const StockList: React.FC = () => {
         : favList.filter(item => item.stock_code !== stockCode);
       setFavList(updatedFavList);
       if (nextStatus === 1 && response.tag && !existingTags.includes(response.tag)) {
-        setExistingTags(prev => [...prev, response.tag]);
+        const newTag = response.tag as string;
+        setExistingTags(prev => [...prev, newTag]);
       }
       if (onlyFavorites || selectedIndustry || selectedSentiment || stockNameFilter || selectedTagFilter || ma5GrowthFilter || ma10GrowthFilter || h20LastFilters.length > 0 || customFilter) {
         setFilteredStocks(applyFilters(stocks, {
@@ -568,7 +600,7 @@ const StockList: React.FC = () => {
         setSelectedStockFavoriteInfo({
           price_date: nextStatus === 1 ? response.price_date || null : null,
           status: nextStatus,
-          tag: nextStatus === 1 ? response.tag : null,
+          tag: nextStatus === 1 ? (response.tag ?? null) : null,
         });
       }
     } catch (e: any) {
@@ -1445,7 +1477,7 @@ const StockList: React.FC = () => {
       setSelectedStockFavoriteInfo({
         price_date: favInfo.price_date,
         status: favInfo.status,
-        tag: favInfo.tag,
+        tag: favInfo.tag ?? null,
       });
     } catch (e: any) {
       console.error('获取收藏状态失败:', e);
@@ -2113,8 +2145,10 @@ const StockList: React.FC = () => {
             <Select
               value={selectedTagFilter}
               onChange={(value) => handleTagFilterChange(value)}
-              style={{ width: '120px' }}
-              size="small"
+              style={{ width: '180px' }}
+              size="big"
+              optionLabelProp="label"
+              dropdownStyle={{ minWidth: '200px' }}
               options={existingTags.map((tag) => ({
                 value: tag,
                 label: (
@@ -2131,9 +2165,70 @@ const StockList: React.FC = () => {
                   </span>
                 ),
               }))}
+              optionRender={(option) => {
+                const tag = option.value as string;
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}>
+                      <span
+                        style={{
+                          width: '6px',
+                          height: '6px',
+                          borderRadius: '50%',
+                          backgroundColor: getTagColor(tag).border,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tag}</span>
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0, marginLeft: '8px' }}>
+                      <EditOutlined
+                        style={{ fontSize: '12px', color: '#1890ff' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTagEditOldValue(tag);
+                          setTagEditNewValue(tag);
+                          setTagEditModalVisible(true);
+                        }}
+                      />
+                      <Popconfirm
+                        title={`确认取消所有 tag 为 "${tag}" 的收藏？`}
+                        onConfirm={() => handleBatchDeleteTag(tag)}
+                        okText="确认"
+                        cancelText="取消"
+                      >
+                        <DeleteOutlined
+                          style={{ fontSize: '12px', color: '#ff4d4f' }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </Popconfirm>
+                    </span>
+                  </div>
+                );
+              }}
             />
           </div>
         )}
+
+        <Modal
+          title="批量修改标签"
+          open={tagEditModalVisible}
+          onOk={handleBatchUpdateTag}
+          onCancel={() => setTagEditModalVisible(false)}
+          okText="保存"
+          cancelText="取消"
+        >
+          <div style={{ marginBottom: '8px', fontSize: '13px', color: '#999' }}>
+            将所有标签为 "{tagEditOldValue}" 的收藏记录修改为新标签：
+          </div>
+          <Input
+            value={tagEditNewValue}
+            onChange={(e) => setTagEditNewValue(e.target.value)}
+            placeholder="输入新标签（最多20字）"
+            maxLength={20}
+            onPressEnter={handleBatchUpdateTag}
+          />
+        </Modal>
 
         <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
           <Button

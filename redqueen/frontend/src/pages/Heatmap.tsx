@@ -72,6 +72,7 @@ interface StockData {
 interface TreemapData {
   name: string;
   value: number;
+  realValue?: number; // 真实市值（行业节点用，value 设为固定值以保证布局位置一致）
   changePct?: number;
   itemStyle?: {
     color: string;
@@ -81,6 +82,8 @@ interface TreemapData {
     fontSize: number;
   };
   displayName?: string;
+  stockCode?: string;    // 股票节点：股票代码
+  industryCode?: string; // 行业节点：行业代码；股票节点：所属行业代码
 }
 
 const Heatmap: React.FC = () => {
@@ -95,6 +98,18 @@ const Heatmap: React.FC = () => {
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
   const [selectedBin, setSelectedBin] = useState<ColorScaleBin | null>(null);
 
+  // 行业模式抽屉状态：点击热力图行业/个股色块时使用
+  const [drawerMode, setDrawerMode] = useState<'bin' | 'industry'>('bin');
+  const [industryStocks, setIndustryStocks] = useState<StockData[]>([]);
+  const [industryInfo, setIndustryInfo] = useState<{
+    name: string;
+    totalCount: number;
+    upCount: number;
+    upRatio: number;
+    upAvgPct: number;
+    allAvgPct: number;
+  } | null>(null);
+
   // 收藏相关状态
   const [favStockCodes, setFavStockCodes] = useState<Set<string>>(new Set());
 
@@ -104,6 +119,7 @@ const Heatmap: React.FC = () => {
   const [drawerKLineLoading, setDrawerKLineLoading] = useState<boolean>(false);
   const drawerKLineChartRef = useRef<HTMLDivElement | null>(null);
   const drawerKLineChartInstance = useRef<echarts.ECharts | null>(null);
+  const fetchDrawerKLineDataRef = useRef<(stockCode: string) => void>(() => {});
 
   useEffect(() => {
     loadLatestTradingDay();
@@ -499,29 +515,37 @@ const Heatmap: React.FC = () => {
         label: {
           fontSize: labelConfig.fontSize // 基于市值的字号（levels 回调会用 rect 重新动态计算）
         },
-        displayName: labelConfig.displayName // 基于市值的截断显示文本（预留字段）
+        displayName: labelConfig.displayName, // 基于市值的截断显示文本（预留字段）
+        stockCode: stock.stock_code,    // 股票代码（供点击事件提取）
+        industryCode: stock.industry_code // 所属行业代码（供点击事件提取）
       });
       industry.totalValue += stock.market_cap_r; // 累计行业总市值
     });
 
-    // 将 Map 转为数组，每个行业成为一个父节点，children 是其下所有股票
-    return Array.from(industryMap.values()).map(industry => {
-      const industryLabelConfig = getLabelConfig(industry.totalValue, industry.name);
-      return {
-        name: industry.name,
-        value: industry.totalValue,
-        changePct: industry.industryChangePct ?? 0,
-        children: industry.children,
-        // 行业颜色：若有行业涨跌幅则按规则上色，否则不覆盖默认色
-        itemStyle: industry.industryChangePct !== null ? {
-          color: getColor(industry.industryChangePct)
-        } : undefined,
-        label: {
-          fontSize: industryLabelConfig.fontSize
-        },
-        displayName: industryLabelConfig.displayName
-      };
-    });
+    // 将 Map 转为数组，按 industry_code 固定排序，确保多次请求时行业布局位置一致
+    // 行业 value 统一设为 1（等分空间），真实市值存入 realValue（供 tooltip 显示）
+    // 这样无论市值如何变化，行业区域位置始终固定，便于对比不同条件下同行业的变化
+    return Array.from(industryMap.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([code, industry]) => {
+        const industryLabelConfig = getLabelConfig(industry.totalValue, industry.name);
+        return {
+          name: industry.name,
+          value: 1,                          // 固定值，保证行业区域位置一致
+          realValue: industry.totalValue,    // 真实总市值，供 tooltip 显示
+          changePct: industry.industryChangePct ?? 0,
+          industryCode: code,                // 行业代码（供点击事件提取）
+          children: industry.children,
+          // 行业颜色：若有行业涨跌幅则按规则上色，否则不覆盖默认色
+          itemStyle: industry.industryChangePct !== null ? {
+            color: getColor(industry.industryChangePct)
+          } : undefined,
+          label: {
+            fontSize: industryLabelConfig.fontSize
+          },
+          displayName: industryLabelConfig.displayName
+        };
+      });
   };
 
   const renderChart = useCallback((treemapData: TreemapData[]) => {
@@ -563,10 +587,10 @@ const Heatmap: React.FC = () => {
         w = params.rect.width || 0;
         h = params.rect.height || 0;
       } else {
-        // Fallback：当 rect 不可用时，基于 value 与根节点最大值的比例估算尺寸
-        const value = params.value || data.value || 0;
-        // 计算整棵树中所有节点 value 的最大值，用于归一化
-        const maxVal = treemapData.reduce((m: number, d: TreemapData) => Math.max(m, d.value || 0), 0) || 1;
+        // Fallback：当 rect 不可用时，基于 realValue 与根节点最大值的比例估算尺寸
+        const value = data.realValue ?? params.value ?? data.value ?? 0;
+        // 计算整棵树中所有节点 realValue 的最大值，用于归一化
+        const maxVal = treemapData.reduce((m: number, d: TreemapData) => Math.max(m, d.realValue || d.value || 0), 0) || 1;
         // sqrt：面积是线性的，开方后让"小 value"的节点也能得到合理尺寸（不至于过小）
         const ratio = Math.sqrt(value / maxVal) * 120;
         w = Math.max(20, ratio);
@@ -639,10 +663,12 @@ const Heatmap: React.FC = () => {
           // 带符号的涨跌文本：如 "+3.21%"、"-1.50%"
           const changeText = changePct !== undefined ? `${(changePct >= 0 ? '+' : '')}${(changePct * 100).toFixed(2)}%` : '-';
 
-          // 行业节点（父节点）：只显示行业名 + 涨跌幅
+          // 行业节点（父节点）：显示行业名 + 真实总市值 + 涨跌幅
           if (data.children) {
+            const realCap = data.realValue !== undefined ? `${(data.realValue / 100000000).toFixed(2)} 亿` : '-';
             return `<div style="padding: 8px;">
-              ${data.name}
+              ${data.name}<br/>
+              总市值: ${realCap}<br/>
               涨跌幅: <span style="color: ${changeColor}">${changeText}</span>
             </div>`;
           } else {
@@ -724,7 +750,8 @@ const Heatmap: React.FC = () => {
               // levels[1]: 第二级别（行业级）—— 行业色块分组
               //   - 显示行业名称（hasChangePct=false，不显示行业涨跌幅）
               //   - 字号由 computeDynamicLabel 按矩形尺寸动态计算
-              //   - lineHeight 不设置回调（ECharts 默认 = fontSize，确保垂直居中）
+              //   - sort: false 禁止 ECharts 按 value 重新排序，保持 industry_code 固定顺序
+              sort: false,
               itemStyle: {
                 borderColor: '#000000',
                 borderWidth: 0,
@@ -788,8 +815,67 @@ const Heatmap: React.FC = () => {
       ]
     };
 
-    instance.setOption(option);
-  }, [chartInstance]);
+    instance.setOption(option, true);
+
+    // 点击热力图色块：行业色块 → 展示该行业全部个股；个股色块 → 展示该行业全部个股并高亮选中
+    instance.off('click');
+    instance.on('click', (params: any) => {
+      if (params.dataType === 'edge') return;
+      const node = params.data as TreemapData;
+      if (!node) return;
+
+      let industryCode: string | undefined;
+      let stockCode: string | undefined;
+
+      if (node.children) {
+        // 点击行业节点
+        industryCode = node.industryCode;
+      } else {
+        // 点击股票节点
+        industryCode = node.industryCode;
+        stockCode = node.stockCode;
+      }
+
+      if (!industryCode) return;
+
+      // 从原始数据中过滤该行业全部个股
+      const stocks = data.filter(s => s.industry_code === industryCode);
+      if (stocks.length === 0) return;
+
+      // 计算行业统计信息
+      const upStocks = stocks.filter(s => s.period_pct !== null && s.period_pct > 0);
+      const upCount = upStocks.length;
+      const totalCount = stocks.length;
+      const upRatio = totalCount > 0 ? upCount / totalCount : 0;
+      const upAvgPct = upCount > 0
+        ? upStocks.reduce((sum, s) => sum + (s.period_pct || 0), 0) / upCount
+        : 0;
+      const allAvgPct = totalCount > 0
+        ? stocks.reduce((sum, s) => sum + (s.period_pct || 0), 0) / totalCount
+        : 0;
+
+      setDrawerMode('industry');
+      setIndustryStocks(stocks);
+      setIndustryInfo({
+        name: stocks[0]?.industry_name || node.name,
+        totalCount,
+        upCount,
+        upRatio,
+        upAvgPct,
+        allAvgPct
+      });
+      setSelectedBin(null); // 清除 bin 模式
+      setSelectedDrawerStock(stockCode || '');
+      setDrawerKLineData([]);
+      setDrawerKLineLoading(false);
+      setDrawerVisible(true);
+
+      // 如果点击的是个股，自动加载 K 线图
+      if (stockCode) {
+        fetchDrawerKLineDataRef.current(stockCode);
+      }
+    });
+  }, [chartInstance, data]);
 
   useEffect(() => {
     if (data.length > 0) {
@@ -1108,6 +1194,18 @@ const Heatmap: React.FC = () => {
             color0: '#11c26d',
             borderColor: '#ef232a',
             borderColor0: '#11c26d'
+          },
+          markLine: {
+            symbol: 'none',
+            silent: true,
+            lineStyle: {
+              type: 'dashed',
+              width: 1.2
+            },
+            data: [
+              ...(date1 ? [{ xAxis: date1, lineStyle: { color: '#1890ff' }, label: { show: true, formatter: 'S', position: 'insideEndTop', fontSize: 10, color: '#1890ff' } }] : []),
+              ...(date2 ? [{ xAxis: date2, lineStyle: { color: '#fa8c16' }, label: { show: true, formatter: 'E', position: 'insideEndTop', fontSize: 10, color: '#fa8c16' } }] : [])
+            ]
           }
         },
         {
@@ -1186,14 +1284,14 @@ const Heatmap: React.FC = () => {
 
     drawerKLineChartInstance.current.setOption(option);
     drawerKLineChartInstance.current.resize();
-  }, []);
+  }, [date1, date2]);
 
   /**
    * Drawer K 线图数据获取函数
    * 以数据最新日期（date2）作为 endDate 查询个股历史 K 线数据
    */
   const fetchDrawerKLineData = useCallback(async (stockCode: string) => {
-    if (!stockCode || !date2) {
+    if (!stockCode) {
       return;
     }
 
@@ -1206,17 +1304,11 @@ const Heatmap: React.FC = () => {
     }
 
     try {
-      // 获取所有可用数据（days=9999），以 date2 作为结束日期
-      const kLineResult = await getStockKLineData(stockCode, 9999, date2);
+      // 获取所有可用数据（不限制结束日期，展示到数据最新日）
+      const kLineResult = await getStockKLineData(stockCode, 9999, '');
 
       if (Array.isArray(kLineResult) && kLineResult.length > 0) {
         setDrawerKLineData(kLineResult);
-      } else {
-        // 兜底：如果指定 endDate 返回空，尝试不指定 endDate
-        const fallback = await getStockKLineData(stockCode, 9999, '');
-        if (Array.isArray(fallback) && fallback.length > 0) {
-          setDrawerKLineData(fallback);
-        }
       }
     } catch (error) {
       console.error('获取 Drawer K 线数据失败:', error);
@@ -1224,7 +1316,10 @@ const Heatmap: React.FC = () => {
     } finally {
       setDrawerKLineLoading(false);
     }
-  }, [date2]);
+  }, []);
+
+  // 保持 ref 最新，供 renderChart 中的点击事件调用
+  fetchDrawerKLineDataRef.current = fetchDrawerKLineData;
 
   // Drawer K 线图数据变化时重新渲染
   useEffect(() => {
@@ -1385,6 +1480,8 @@ const Heatmap: React.FC = () => {
                       }}
                       onClick={() => {
                         setSelectedBin(bin);
+                        setDrawerMode('bin');
+                        setIndustryInfo(null);
                         setDrawerVisible(true);
                       }}
                     >
@@ -1425,10 +1522,45 @@ const Heatmap: React.FC = () => {
         style={{ flex: 1, width: '100%', position: 'relative', minHeight: 400 }}
       />
 
-      {/* 抽屉：展示刻度区间内的个股信息 */}
+      {/* 抽屉：展示刻度区间或行业内的个股信息 */}
       <Drawer
         title={
-          selectedBin ? (
+          drawerMode === 'industry' && industryInfo ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, lineHeight: 1.5 }}>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>行业</strong>
+                <span style={{ fontWeight: 'bold' }}>{industryInfo.name}</span>
+              </span>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>上涨</strong>
+                <span style={{ fontWeight: 'bold' }}>
+                  {(industryInfo.upRatio * 100).toFixed(0)}%（{industryInfo.upCount}/{industryInfo.totalCount}）
+                </span>
+              </span>
+              <span>
+                <strong style={{ color: '#666', marginRight: 4 }}>平均涨跌幅</strong>
+                <Text
+                  style={{
+                    color: industryInfo.upAvgPct >= 0 ? '#ef232a' : '#11c26d',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {industryInfo.upAvgPct >= 0 ? '+' : ''}
+                  {(industryInfo.upAvgPct * 100).toFixed(2)}%
+                </Text>
+                <span style={{ color: '#999', margin: '0 4px' }}>/</span>
+                <Text
+                  style={{
+                    color: industryInfo.allAvgPct >= 0 ? '#ef232a' : '#11c26d',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {industryInfo.allAvgPct >= 0 ? '+' : ''}
+                  {(industryInfo.allAvgPct * 100).toFixed(2)}%
+                </Text>
+              </span>
+            </div>
+          ) : selectedBin ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, lineHeight: 1.5 }}>
               <span>
                 <strong style={{ color: '#666', marginRight: 4 }}>区间</strong>
@@ -1474,11 +1606,13 @@ const Heatmap: React.FC = () => {
         onClose={() => {
           setDrawerVisible(false);
           setSelectedBin(null);
+          setDrawerMode('bin');
+          setIndustryInfo(null);
         }}
         open={drawerVisible}
         width={1000}
       >
-        {selectedBin && (
+        {(selectedBin || (drawerMode === 'industry' && industryStocks.length > 0)) && (
           <>
             {/* K 线图模块：点击股票列表中的个股时显示，放在列表上方 */}
             {selectedDrawerStock && (
@@ -1497,7 +1631,10 @@ const Heatmap: React.FC = () => {
                     <div>
                       <span style={{ fontWeight: 'bold' }}>
                         {selectedDrawerStock} - {
-                          selectedBin?.stocks.find(s => s.stock_code === selectedDrawerStock)?.stock_name || ''
+                          (drawerMode === 'industry'
+                            ? industryStocks
+                            : selectedBin?.stocks || []
+                          ).find(s => s.stock_code === selectedDrawerStock)?.stock_name || ''
                         }
                       </span>
                       <span style={{ marginLeft: 16, color: '#666', fontWeight: 'bold' }}>
@@ -1560,7 +1697,7 @@ const Heatmap: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                <Spin spinning={drawerKLineLoading} tip="加载中...">
+                <Spin spinning={drawerKLineLoading} description="加载中...">
                   <div
                     ref={drawerKLineChartRef}
                     style={{
@@ -1579,7 +1716,7 @@ const Heatmap: React.FC = () => {
             <div style={{ width: '100%', overflow: 'hidden' }}>
               <Table
                 size="small"
-                dataSource={selectedBin.stocks}
+                dataSource={drawerMode === 'industry' ? industryStocks : (selectedBin?.stocks || [])}
                 pagination={{
                   pageSize: 10,
                   showSizeChanger: true,

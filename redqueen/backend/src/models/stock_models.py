@@ -121,6 +121,7 @@ class IndustryThsStock(Base):
     stock_name = Column(Text)
     industry_code = Column(Text, index=True)
     edit_date = Column(Date)
+    flag = Column(Integer, default=0)
 
 
 class StockFavorite(Base):

@@ -136,6 +136,7 @@ export interface FavoriteItem {
   stock_code: string;
   price_date: string | null;
   status: number;
+  tag?: string | null;
   updated_time: string | null;
 }
 
@@ -160,6 +161,18 @@ export const upsertFavorite = async (
 
 export const deleteFavorite = async (stockCode: string) => {
   const response = await api.delete(`/stock/favorite/${stockCode}`);
+  return response.data;
+};
+
+/** 批量修改某个 tag 的所有收藏记录的 tag 值 */
+export const batchUpdateFavoriteTag = async (oldTag: string, newTag: string) => {
+  const response = await api.put('/stock/favorite/tag/batch', { old_tag: oldTag, new_tag: newTag });
+  return response.data;
+};
+
+/** 批量取消收藏某个 tag 的所有收藏记录 */
+export const batchDeleteFavoriteByTag = async (tag: string) => {
+  const response = await api.delete('/stock/favorite/tag/batch', { data: { tag } });
   return response.data;
 };
 

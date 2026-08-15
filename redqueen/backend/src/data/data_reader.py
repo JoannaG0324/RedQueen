@@ -182,7 +182,7 @@ class DataReader:
     def get_stock_industry(self, stock_code: str) -> Dict[str, str]:
         """获取股票对应的同花顺行业信息"""
         # 查询个股对应的行业
-        industry_stock = self.db.query(IndustryThsStock).filter(IndustryThsStock.stock_code == stock_code).first()
+        industry_stock = self.db.query(IndustryThsStock).filter(IndustryThsStock.stock_code == stock_code, IndustryThsStock.flag == 1).first()
         
         if not industry_stock:
             return {"industry": None, "industry_code": None}

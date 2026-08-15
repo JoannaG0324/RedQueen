@@ -408,7 +408,7 @@ async def get_stock_list(target_date: str = None, industry: str = "", stock_code
             sdc.high_20d_last as high_20d_last, sdc.high_120d_last as high_120d_last
         FROM stock_daily_qfq_calc sdqc
         LEFT JOIN stock_daily_analysis sd ON sd.stock_code = sdqc.stock_code AND sd.date = sdqc.date
-        LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code
+        LEFT JOIN industry_ths_stock its ON its.stock_code = sdqc.stock_code AND its.flag = 1
         LEFT JOIN industry_ths it ON it.industry_code = its.industry_code
         LEFT JOIN stock_daily_calc_update sdc ON sdc.stock_code = sdqc.stock_code AND sdc.date = sdqc.date
         WHERE {condition_str}
@@ -668,7 +668,7 @@ async def get_heatmap_data(date1: str, date2: str, db: Session = Depends(get_db)
                 # 120日高点距今天数
                 sdc.high_120d_last as high_120d_last
             FROM industry_ths it
-            JOIN industry_ths_stock its ON it.industry_code = its.industry_code
+            JOIN industry_ths_stock its ON it.industry_code = its.industry_code AND its.flag = 1
             LEFT JOIN stock_daily_analysis s1 ON its.stock_code = s1.stock_code AND s1.date = :date1
             LEFT JOIN stock_daily_analysis s2 ON its.stock_code = s2.stock_code AND s2.date = :date2
             LEFT JOIN (
@@ -1388,6 +1388,61 @@ async def delete_favorite(stock_code: str, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"删除收藏失败: {str(e)}")
+
+
+@app.put("/api/stock/favorite/tag/batch", response_model=Dict[str, Any])
+async def batch_update_favorite_tag(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """批量修改某个 tag 的所有收藏记录的 tag 值"""
+    try:
+        old_tag = payload.get("old_tag")
+        new_tag = payload.get("new_tag")
+        if old_tag is None:
+            raise HTTPException(status_code=400, detail="old_tag 不能为空")
+        if new_tag is None:
+            new_tag = ""
+        if len(new_tag) > 20:
+            raise HTTPException(status_code=400, detail="new_tag 不能超过20个字符")
+        rows = db.query(StockFavorite).filter(
+            StockFavorite.tag == old_tag,
+            StockFavorite.status == 1
+        ).all()
+        updated_count = 0
+        for row in rows:
+            row.tag = new_tag if new_tag else None
+            row.updated_time = func.now()
+            updated_count += 1
+        db.commit()
+        return {"status": "success", "updated_count": updated_count, "old_tag": old_tag, "new_tag": new_tag}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"批量修改标签失败: {str(e)}")
+
+
+@app.delete("/api/stock/favorite/tag/batch", response_model=Dict[str, Any])
+async def batch_delete_favorite_by_tag(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """批量取消收藏某个 tag 的所有收藏记录"""
+    try:
+        tag = payload.get("tag")
+        if tag is None:
+            raise HTTPException(status_code=400, detail="tag 不能为空")
+        rows = db.query(StockFavorite).filter(
+            StockFavorite.tag == tag,
+            StockFavorite.status == 1
+        ).all()
+        deleted_count = 0
+        for row in rows:
+            row.status = 0
+            row.updated_time = func.now()
+            deleted_count += 1
+        db.commit()
+        return {"status": "success", "deleted_count": deleted_count, "tag": tag}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"批量取消收藏失败: {str(e)}")
 
 
 @app.get("/api/sector/list", response_model=List[Dict[str, Any]])
